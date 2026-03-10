@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Settings – Guardian Helmet{% endblock %}
+{% block nav_sub %}Device connection{% endblock %}
+{% block head %}
+  <style>
+    .settings-page { max-width: 1200px; }
+    .settings-form .form-group { margin-bottom: 20px; }
+    .settings-form label { display: block; font-size: 0.9rem; font-weight: 500; margin-bottom: 8px; color: var(--text-muted); }
+    .settings-form input { width: 100%; padding: 12px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); font-size: 1rem; }
+    .settings-form input:focus { outline: none; border-color: var(--accent); }
+    .settings-form .hint { font-size: 0.85rem; color: var(--text-muted); margin-top: 6px; }
+    .settings-saved { padding: 12px 16px; background: rgba(63, 185, 80, 0.15); border: 1px solid var(--success); border-radius: var(--radius-sm); margin-bottom: 24px; color: var(--success); font-size: 0.9rem; }
+    .settings-links { list-style: none; padding: 0; margin: 0; }
+    .settings-links li { margin-bottom: 10px; }
+    .settings-links a { display: inline-flex; align-items: center; padding: 10px 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); text-decoration: none; font-weight: 500; transition: background 0.2s, border-color 0.2s; }
+    .settings-links a:hover { background: var(--bg-hover); border-color: var(--accent); }
+    .settings-links a.logout-link { color: var(--text-muted); }
+    .settings-links a.logout-link:hover { border-color: var(--text-muted); color: var(--text); }
+    .settings-cards { display: flex; gap: 20px; align-items: stretch; margin-top: 24px; }
+    .settings-cards .card { flex: 1; min-width: 260px; }
+    @media (max-width: 768px) {
+      .settings-page { max-width: 100%; }
+      .settings-form .btn { width: 100%; }
+      .settings-cards { flex-direction: column; }
+      .settings-cards .card { min-width: 0; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <div class="settings-page">
+    <h1 class="page-title">Settings</h1>
+    <p class="page-desc">Set the IP address of your helmet ESP32 so the web app is connected to the device. The ESP32 must be on the same network and have <code>SERVER_URL</code> set to this server’s address.</p>
+
+    {% if saved %}
+    <div class="settings-saved">Settings saved.</div>
+    {% endif %}
+
+    <div class="settings-cards">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Device connection</span>
+        </div>
+        <form method="post" action="{{ url_for('settings_page') }}" class="settings-form">
+          <div class="form-group">
+            <label for="esp32_ip">Helmet ESP32 IP address</label>
+            <input type="text" id="esp32_ip" name="esp32_ip" value="{{ esp32_ip or '' }}" placeholder="e.g. 192.168.1.100" autocomplete="off" />
+            <p class="hint">Enter the IP shown in Serial/Thonny when the ESP32 connects to WiFi. Leave empty if you only use the dashboard without linking a specific device IP.</p>
+          </div>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Dash cam stream (optional)</span>
+        </div>
+        <p class="page-desc" style="margin-bottom: 16px;">The dash cam stream URL is set via the <code>ESP32_CAM_STREAM_URL</code> environment variable or in <code>server/.env</code> (e.g. <code>ESP32_CAM_STREAM_URL=http://192.168.254.184/stream</code>). Restart the server after changing it.</p>
+        {% if esp32_cam_stream_url %}
+        <p class="hint">Current value: <code>{{ esp32_cam_stream_url }}</code></p>
+        {% else %}
+        <p class="hint">Not set — set it in <code>.env</code> to show the live stream on the Dash cam page.</p>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Data, reports & account</span>
+        </div>
+        <ul class="settings-links">
+          <li><a href="{{ url_for('data_logs') }}">Data Logs</a></li>
+          <li><a href="{{ url_for('reports') }}">Backup & Reports</a></li>
+          {% if current_user %}<li><a href="{{ url_for('logout_page') }}" class="logout-link">Log out ({{ current_user.username }})</a></li>{% endif %}
+        </ul>
+      </div>
+    </div>
+  </div>
+{% endblock %}

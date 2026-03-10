@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#001524">
+  <title>{% block title %}Guardian Helmet{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --bg: #001524;
+      --bg-elevated: #021c2e;
+      --bg-card: #021c2e;
+      --bg-hover: #052535;
+      --accent: #8E1616;
+      --accent-hover: #a91d1d;
+      --accent-soft: rgba(142, 22, 22, 0.18);
+      --text: #f0f4f8;
+      --text-muted: #8a9bab;
+      --border: #0d2d42;
+      --success: #3fb950;
+      --error: #f85149;
+      --radius: 12px;
+      --radius-sm: 8px;
+      --shadow: 0 4px 24px rgba(0,0,0,0.25);
+      --nav-height: 64px;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html {
+      scroll-behavior: smooth;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    html::-webkit-scrollbar { display: none; }
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      padding-top: var(--nav-height);
+      overflow-y: scroll;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    body::-webkit-scrollbar { display: none; }
+
+    /* —— Nav —— */
+    .nav-bar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: var(--nav-height);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 24px;
+      z-index: 1100;
+      backdrop-filter: blur(12px);
+    }
+    .nav-brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .nav-brand:hover { color: var(--text); }
+    .nav-logo {
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-sm);
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg-card);
+    }
+    .nav-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      filter: brightness(0) saturate(100%) invert(18%) sepia(89%) saturate(5000%) hue-rotate(350deg) brightness(0.6);
+    }
+    .nav-brand-text { font-weight: 700; font-size: 1.2rem; letter-spacing: -0.02em; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 1;
+      min-width: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: thin;
+      -webkit-overflow-scrolling: touch;
+    }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      padding: 8px 12px;
+      border-radius: var(--radius-sm);
+      transition: color 0.2s, background 0.2s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .nav-links a:hover { color: var(--text); background: var(--bg-hover); }
+    .nav-links a.active { color: var(--accent); background: var(--accent-soft); border-left: 2px solid var(--accent); padding-left: 10px; }
+    .nav-links a.nav-logout { color: var(--text-muted); font-size: 0.8rem; }
+    .nav-links a.nav-logout:hover { color: var(--text); }
+    .nav-live {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      padding: 6px 12px;
+      background: var(--bg-card);
+      border-radius: 20px;
+      margin-left: 12px;
+    }
+    .nav-live-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .nav-live.nav-live--offline .nav-live-dot {
+      background: var(--text-muted);
+      box-shadow: none;
+      animation: none;
+    }
+    .nav-live.nav-live--offline { color: var(--text-muted); }
+    .nav-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    .nav-notif-wrap { position: relative; margin-left: 8px; }
+    .nav-notif-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: color 0.2s, background 0.2s;
+      position: relative;
+    }
+    .nav-notif-btn:hover { color: var(--text); background: var(--bg-hover); }
+    .nav-notif-btn svg { width: 20px; height: 20px; }
+    .nav-notif-dot {
+      display: none;
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #e53935;
+      border: 2px solid var(--bg-nav);
+      box-shadow: 0 0 0 1px rgba(229, 57, 53, 0.5);
+    }
+    .nav-notif-wrap.has-alerts .nav-notif-dot { display: block; }
+    .nav-notif-dropdown {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      margin-top: 8px;
+      min-width: 260px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 16px;
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-8px);
+      transition: opacity 0.2s, visibility 0.2s, transform 0.2s;
+      z-index: 1200;
+    }
+    .nav-notif-wrap.is-open .nav-notif-dropdown { opacity: 1; visibility: visible; transform: translateY(0); }
+    .nav-notif-title { font-size: 0.85rem; font-weight: 600; margin-bottom: 4px; }
+    .nav-notif-meta { font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px; }
+    .nav-notif-dropdown .btn { width: 100%; justify-content: center; margin-top: 8px; }
+    .nav-notif-dropdown a { display: block; color: var(--accent); text-decoration: none; font-size: 0.9rem; font-weight: 500; padding: 8px 0; }
+    .nav-notif-dropdown a:hover { text-decoration: underline; }
+
+    /* —— Layout —— */
+    .main { max-width: 1100px; margin: 0 auto; padding: 32px 24px 64px; position: relative; z-index: 0; }
+    .page-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.02em; }
+    .page-desc { color: var(--text-muted); font-size: 0.95rem; margin-bottom: 28px; }
+
+    /* —— Cards —— */
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: var(--shadow);
+      transition: border-color 0.2s;
+    }
+    .card:hover { border-color: #30363d; }
+    .card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .card-title { font-size: 1.05rem; font-weight: 600; }
+    .card-meta { font-size: 0.8rem; color: var(--text-muted); font-weight: 400; }
+
+    /* —— Buttons —— */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 18px;
+      border-radius: var(--radius-sm);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      text-decoration: none;
+      transition: filter 0.2s, background 0.2s;
+      font-family: inherit;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover { filter: brightness(1.1); background: var(--accent-hover); }
+    .btn-secondary { background: var(--border); color: var(--text); }
+    .btn-secondary:hover { background: #30363d; }
+    .btn-danger { background: var(--error); color: #fff; }
+    .btn-danger:hover { filter: brightness(1.08); }
+    .btn-ghost { background: transparent; color: var(--accent); }
+    .btn-ghost:hover { background: var(--accent-soft); }
+    .btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    /* —— Forms —— */
+    .form-group { margin-bottom: 16px; }
+    .form-label { display: block; font-size: 0.85rem; font-weight: 500; color: var(--text-muted); margin-bottom: 6px; }
+    .form-input {
+      width: 100%;
+      max-width: 360px;
+      padding: 12px 14px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text);
+      font-size: 0.95rem;
+      font-family: inherit;
+      transition: border-color 0.2s;
+    }
+    .form-input:focus { outline: none; border-color: var(--accent); }
+    .form-input::placeholder { color: var(--text-muted); }
+
+    /* —— Tables —— */
+    .mobile-drawer { display: none; }
+    .table-wrap { overflow-x: auto; border-radius: var(--radius-sm); border: 1px solid var(--border); -webkit-overflow-scrolling: touch; }
+    .table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    .table th {
+      text-align: left;
+      padding: 14px 18px;
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      border-bottom: 1px solid var(--border);
+    }
+    .table td { padding: 14px 18px; border-bottom: 1px solid var(--border); }
+    .table tbody tr { transition: background 0.15s; }
+    .table tbody tr:hover { background: var(--bg-hover); }
+    .table tbody tr:last-child td { border-bottom: none; }
+    .empty-state { text-align: center; padding: 48px 24px; color: var(--text-muted); font-size: 0.95rem; }
+    .msg-error { color: var(--error); font-size: 0.9rem; margin-bottom: 12px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+    .system-notif-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1999;
+      background: rgba(0, 21, 36, 0.4);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 0.25s ease, visibility 0.25s ease;
+      pointer-events: none;
+    }
+    .system-notif-backdrop.visible {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .system-notif {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.95);
+      z-index: 2000;
+      min-width: 320px;
+      max-width: 90vw;
+      padding: 24px 28px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-left: 4px solid var(--accent);
+      border-radius: 20px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 20px;
+      transition: transform 0.25s ease, opacity 0.25s ease, visibility 0.25s ease;
+      pointer-events: none;
+      visibility: hidden;
+      opacity: 0;
+    }
+    .system-notif.visible {
+      transform: translate(-50%, -50%) scale(1);
+      pointer-events: auto;
+      visibility: visible;
+      opacity: 1;
+    }
+    .system-notif-msg { font-size: 0.95rem; color: var(--text); text-align: center; line-height: 1.5; }
+    .system-notif-btns { display: flex; gap: 12px; justify-content: center; flex-shrink: 0; }
+    .system-notif-btns .btn { min-width: 88px; }
+
+    .logout-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 1999;
+      background: rgba(0, 21, 36, 0.4);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      visibility: hidden;
+      opacity: 0;
+      transition: opacity 0.25s ease, visibility 0.25s ease;
+      pointer-events: none;
+    }
+    .logout-modal-backdrop.visible {
+      visibility: visible;
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .logout-modal {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%) scale(0.95);
+      z-index: 2000;
+      min-width: 320px;
+      max-width: 90vw;
+      padding: 24px 28px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: 20px;
+      transition: transform 0.25s ease, opacity 0.25s ease, visibility 0.25s ease;
+      pointer-events: none;
+      visibility: hidden;
+      opacity: 0;
+    }
+    .logout-modal.visible {
+      transform: translate(-50%, -50%) scale(1);
+      pointer-events: auto;
+      visibility: visible;
+      opacity: 1;
+    }
+    .logout-modal-msg { font-size: 0.95rem; color: var(--text); text-align: center; line-height: 1.5; }
+    .logout-modal-btns { display: flex; gap: 12px; justify-content: center; flex-shrink: 0; }
+    .logout-modal-btns .btn { min-width: 88px; }
+
+    /* —— Responsive: tablet and below —— */
+    @media (max-width: 992px) {
+      .main { padding: 20px 16px 48px; }
+      .card { padding: 18px 16px; margin-bottom: 18px; }
+      .card-head { margin-bottom: 16px; }
+      .table th, .table td { padding: 10px 12px; font-size: 0.85rem; }
+      .form-input { max-width: none; }
+    }
+
+    /* —— Responsive: mobile —— */
+    @media (max-width: 768px) {
+      :root { --nav-height: 56px; }
+      .nav-bar { padding: 0 12px; flex-wrap: wrap; min-height: var(--nav-height); z-index: 100000; }
+      .nav-brand-text { font-size: 1rem; }
+      .nav-links { display: none !important; }
+      .mobile-drawer {
+        display: flex;
+        flex-direction: column;
+        position: fixed;
+        top: var(--nav-height);
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: var(--bg-elevated);
+        padding: 20px 16px;
+        gap: 4px;
+        z-index: 99999;
+        overflow-y: auto;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+        border-right: 1px solid var(--border);
+      }
+      .mobile-drawer.is-open { transform: translateX(0); }
+      .mobile-drawer a {
+        display: block;
+        padding: 14px 16px;
+        color: var(--text-muted);
+        text-decoration: none;
+        font-size: 1rem;
+        font-weight: 500;
+        border-radius: var(--radius-sm);
+        transition: color 0.2s, background 0.2s;
+      }
+      .mobile-drawer a:hover, .mobile-drawer a.active { color: var(--accent); background: var(--accent-soft); }
+      body.nav-open { overflow: hidden; }
+      .nav-overlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 21, 36, 0.85);
+        z-index: 99998;
+        pointer-events: none;
+      }
+      body.nav-open .nav-overlay { display: block; pointer-events: auto; }
+      .nav-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 44px;
+        height: 44px;
+        border: none;
+        background: transparent;
+        color: var(--text-muted);
+        cursor: pointer;
+        border-radius: var(--radius-sm);
+        margin-left: auto;
+      }
+      .nav-toggle:hover { color: var(--text); background: var(--bg-hover); }
+      .nav-toggle svg { width: 24px; height: 24px; }
+      .nav-toggle { display: flex !important; }
+      .main { padding: 16px 12px 40px; max-width: 100%; }
+      .page-title { font-size: 1.25rem; }
+      .page-desc { font-size: 0.9rem; margin-bottom: 20px; }
+      .card { padding: 16px 14px; margin-bottom: 16px; }
+      .card-head { flex-direction: column; align-items: flex-start; gap: 10px; }
+      .card-title { font-size: 1rem; }
+      .btn { padding: 10px 16px; font-size: 0.85rem; }
+      .btn-sm { padding: 8px 12px; font-size: 0.8rem; }
+      .table-wrap { margin: 0 -14px; border-radius: 0; border-left: none; border-right: none; }
+      .table { font-size: 0.8rem; min-width: 720px; }
+      .table th, .table td { padding: 10px 8px; }
+      .empty-state { padding: 32px 16px; font-size: 0.9rem; }
+      .actions { flex-direction: column; align-items: stretch; }
+      .actions .btn { width: 100%; }
+      .system-notif { min-width: 280px; padding: 20px 22px; }
+    }
+
+    @media (max-width: 480px) {
+      .main { padding: 12px 10px 32px; }
+      .card { padding: 14px 12px; }
+      .page-title { font-size: 1.15rem; }
+      .nav-logo { width: 36px; height: 36px; }
+      .nav-brand-text { font-size: 0.95rem; }
+    }
+
+    /* Desktop: normal nav, hide hamburger overlay and mobile drawer */
+    @media (min-width: 769px) {
+      .nav-toggle { display: none !important; }
+      .nav-overlay { display: none !important; }
+      .mobile-drawer { display: none !important; }
+      .nav-links {
+        display: flex !important;
+        position: relative;
+        top: auto;
+        left: auto;
+        right: auto;
+        bottom: auto;
+        transform: none;
+        flex-direction: row;
+        padding: 0;
+        background: transparent;
+        border: none;
+        overflow: visible;
+      }
+    }
+  </style>
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <div class="system-notif-backdrop" id="system-notif-backdrop"></div>
+  <div class="system-notif" id="system-notif" role="alert" aria-live="polite">
+    <span class="system-notif-msg" id="system-notif-msg"></span>
+    <div class="system-notif-btns">
+      <button type="button" class="btn btn-secondary btn-sm" id="system-notif-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="system-notif-dismiss">OK</button>
+    </div>
+  </div>
+  <div class="logout-modal-backdrop" id="logout-modal-backdrop" aria-hidden="true"></div>
+  <div class="logout-modal" id="logout-modal" role="dialog" aria-labelledby="logout-modal-title" aria-modal="true">
+    <p class="logout-modal-msg" id="logout-modal-title">Are you sure you want to log out?</p>
+    <div class="logout-modal-btns">
+      <button type="button" class="btn btn-secondary btn-sm" id="logout-modal-cancel">Cancel</button>
+      <button type="button" class="btn btn-primary btn-sm" id="logout-modal-confirm">Log out</button>
+    </div>
+  </div>
+  <nav class="nav-bar">
+    <a href="{{ url_for('index') }}" class="nav-brand">
+      <div class="nav-logo"><img src="/images/helmet.png" alt="Guardian Helmet" /></div>
+      <div>
+        <span class="nav-brand-text">Guardian Helmet</span>
+      </div>
+    </a>
+    <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open menu" aria-expanded="false" style="display: none;">
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
+    </button>
+    <div class="nav-links" id="nav-links">
+      <a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
+      <a href="{{ url_for('accounts_list') }}" class="{% if request.endpoint and request.endpoint.startswith('account') %}active{% endif %}">Accounts</a>
+      <a href="{{ url_for('emergency_page') }}" class="{% if request.endpoint == 'emergency_page' %}active{% endif %}">Emergency</a>
+      <a href="{{ url_for('camera_page') }}" class="{% if request.endpoint == 'camera_page' %}active{% endif %}">Dash cam</a>
+      <a href="{{ url_for('settings_page') }}" class="{% if request.endpoint == 'settings_page' %}active{% endif %}">Settings</a>
+      {% if current_user %}<a href="{{ url_for('logout_page') }}" class="nav-logout">Log out</a>{% endif %}
+      <div class="nav-right">
+        <div class="nav-notif-wrap {% if unacknowledged_alert_count %}has-alerts{% endif %}" id="nav-notif-wrap">
+          <button type="button" class="nav-notif-btn" id="nav-notif-btn" aria-label="Emergency alerts" aria-expanded="false" aria-haspopup="true">
+            <span class="nav-notif-dot" aria-hidden="true"></span>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
+          </button>
+          <div class="nav-notif-dropdown" id="nav-notif-dropdown" role="menu">
+            <div class="nav-notif-title">Emergency Alerts</div>
+            <div class="nav-notif-meta">Receive · View · Acknowledge · Reset · SOS</div>
+            <a href="{{ url_for('emergency_page') }}" role="menuitem">Manage emergency contacts</a>
+            <button type="button" class="btn btn-secondary btn-sm" id="nav-reset-alerts" style="width:100%; margin-top:10px;">Reset all alerts</button>
+          </div>
+        </div>
+        <span class="nav-live nav-live--offline" id="nav-live-indicator" title="ESP32 connection status"><span class="nav-live-dot"></span> Offline</span>
+      </div>
+    </div>
+  </nav>
+  <div class="nav-overlay" id="nav-overlay" aria-hidden="true"></div>
+  <div class="mobile-drawer" id="mobile-drawer" aria-hidden="true">
+    <a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
+    <a href="{{ url_for('accounts_list') }}" class="{% if request.endpoint and request.endpoint.startswith('account') %}active{% endif %}">Accounts</a>
+    <a href="{{ url_for('emergency_page') }}" class="{% if request.endpoint == 'emergency_page' %}active{% endif %}">Emergency</a>
+    <a href="{{ url_for('camera_page') }}" class="{% if request.endpoint == 'camera_page' %}active{% endif %}">Dash cam</a>
+    <a href="{{ url_for('settings_page') }}" class="{% if request.endpoint == 'settings_page' %}active{% endif %}">Settings</a>
+    {% if current_user %}<a href="{{ url_for('logout_page') }}" class="nav-logout">Log out</a>{% endif %}
+  </div>
+  <main class="main">
+    {% block content %}{% endblock %}
+  </main>
+  <script>
+    function hideSystemNotif() {
+      var el = document.getElementById('system-notif');
+      var backdrop = document.getElementById('system-notif-backdrop');
+      if (el) el.classList.remove('visible');
+      if (backdrop) backdrop.classList.remove('visible');
+      if (window._systemNotifTimer) { clearTimeout(window._systemNotifTimer); window._systemNotifTimer = null; }
+    }
+    window.showSystemNotif = function(message) {
+      var el = document.getElementById('system-notif');
+      var msgEl = document.getElementById('system-notif-msg');
+      var backdrop = document.getElementById('system-notif-backdrop');
+      if (!el || !msgEl) return;
+      msgEl.textContent = message || '';
+      el.classList.add('visible');
+      if (backdrop) backdrop.classList.add('visible');
+      if (window._systemNotifTimer) clearTimeout(window._systemNotifTimer);
+      window._systemNotifTimer = setTimeout(hideSystemNotif, 6000);
+    };
+    (function() {
+      var notifEl = document.getElementById('system-notif');
+      if (notifEl) {
+        notifEl.addEventListener('click', function(e) {
+          if (e.target.id === 'system-notif-dismiss' || e.target.id === 'system-notif-cancel' || e.target.closest('#system-notif-dismiss') || e.target.closest('#system-notif-cancel')) {
+            hideSystemNotif();
+          }
+        });
+      }
+      var backdrop = document.getElementById('system-notif-backdrop');
+      if (backdrop) backdrop.addEventListener('click', hideSystemNotif);
+      var wrap = document.getElementById('nav-notif-wrap');
+      var btn = document.getElementById('nav-notif-btn');
+      var dropdown = document.getElementById('nav-notif-dropdown');
+      var resetBtn = document.getElementById('nav-reset-alerts');
+      if (btn && dropdown) {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          wrap.classList.toggle('is-open');
+          btn.setAttribute('aria-expanded', wrap.classList.contains('is-open'));
+        });
+        document.addEventListener('click', function() { wrap.classList.remove('is-open'); btn.setAttribute('aria-expanded', 'false'); });
+        dropdown.addEventListener('click', function(e) { e.stopPropagation(); });
+      }
+      if (resetBtn) {
+        resetBtn.addEventListener('click', function() {
+          if (!confirm('Delete all alerts? This cannot be undone.')) return;
+          this.disabled = true;
+          fetch('/api/alerts/reset', { method: 'POST' }).then(function() {
+            if (typeof window.refreshAlerts === 'function') window.refreshAlerts();
+            else window.location.reload();
+          }).finally(function() { resetBtn.disabled = false; });
+        });
+      }
+
+      var navToggle = document.getElementById('nav-toggle');
+      var navLinks = document.getElementById('nav-links');
+      var mobileDrawer = document.getElementById('mobile-drawer');
+      var navOverlay = document.getElementById('nav-overlay');
+      function closeNav() {
+        if (navLinks) navLinks.classList.remove('is-open');
+        if (mobileDrawer) mobileDrawer.classList.remove('is-open');
+        document.body.classList.remove('nav-open');
+        if (navToggle) {
+          navToggle.setAttribute('aria-expanded', 'false');
+          navToggle.setAttribute('aria-label', 'Open menu');
+        }
+      }
+      function openNav() {
+        if (mobileDrawer) mobileDrawer.classList.add('is-open');
+        document.body.classList.add('nav-open');
+        if (navToggle) {
+          navToggle.setAttribute('aria-expanded', 'true');
+          navToggle.setAttribute('aria-label', 'Close menu');
+        }
+      }
+      if (navToggle && (navLinks || mobileDrawer)) {
+        navToggle.addEventListener('click', function() {
+          if (document.body.classList.contains('nav-open')) closeNav();
+          else openNav();
+        });
+      }
+      if (mobileDrawer) {
+        mobileDrawer.querySelectorAll('a').forEach(function(a) {
+          a.addEventListener('click', closeNav);
+        });
+      }
+      if (navOverlay) navOverlay.addEventListener('click', closeNav);
+
+      var logoutBackdrop = document.getElementById('logout-modal-backdrop');
+      var logoutModal = document.getElementById('logout-modal');
+      var logoutCancelBtn = document.getElementById('logout-modal-cancel');
+      var logoutConfirmBtn = document.getElementById('logout-modal-confirm');
+      var pendingLogoutUrl = null;
+      function showLogoutModal(url) {
+        pendingLogoutUrl = url;
+        if (logoutBackdrop) logoutBackdrop.classList.add('visible');
+        if (logoutModal) {
+          logoutModal.classList.add('visible');
+          logoutModal.setAttribute('aria-hidden', 'false');
+        }
+      }
+      function hideLogoutModal() {
+        pendingLogoutUrl = null;
+        if (logoutBackdrop) logoutBackdrop.classList.remove('visible');
+        if (logoutModal) {
+          logoutModal.classList.remove('visible');
+          logoutModal.setAttribute('aria-hidden', 'true');
+        }
+      }
+      document.querySelectorAll('a.nav-logout').forEach(function(a) {
+        a.addEventListener('click', function(e) {
+          e.preventDefault();
+          showLogoutModal(this.getAttribute('href'));
+        });
+      });
+      if (logoutCancelBtn) logoutCancelBtn.addEventListener('click', hideLogoutModal);
+      if (logoutConfirmBtn) logoutConfirmBtn.addEventListener('click', function() {
+        if (pendingLogoutUrl) window.location.href = pendingLogoutUrl;
+        hideLogoutModal();
+      });
+      if (logoutBackdrop) logoutBackdrop.addEventListener('click', hideLogoutModal);
+
+      var liveEl = document.getElementById('nav-live-indicator');
+      var notifWrap = document.getElementById('nav-notif-wrap');
+      function updateStatus() {
+        fetch('/api/status').then(function(r) { return r.json(); }).then(function(d) {
+          if (liveEl) {
+            if (d.connected) {
+              liveEl.classList.remove('nav-live--offline');
+              liveEl.innerHTML = '<span class="nav-live-dot"></span> Live';
+            } else {
+              liveEl.classList.add('nav-live--offline');
+              liveEl.innerHTML = '<span class="nav-live-dot"></span> Offline';
+            }
+          }
+          if (notifWrap) {
+            if (d.unacknowledged_alerts > 0) notifWrap.classList.add('has-alerts');
+            else notifWrap.classList.remove('has-alerts');
+          }
+        }).catch(function() {
+          if (liveEl) {
+            liveEl.classList.add('nav-live--offline');
+            liveEl.innerHTML = '<span class="nav-live-dot"></span> Offline';
+          }
+        });
+      }
+      if (liveEl || notifWrap) {
+        updateStatus();
+        setInterval(updateStatus, 5000);
+      }
+    })();
+  </script>
+</body>
+</html>

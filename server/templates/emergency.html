@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+{% block title %}Emergency contacts – Guardian Helmet{% endblock %}
+{% block nav_sub %}SOS contacts{% endblock %}
+{% block head %}
+  <style>
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: 24px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s, visibility 0.2s;
+    }
+    .modal-overlay.is-open { opacity: 1; visibility: visible; }
+    .modal-box {
+      position: relative;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.4);
+      transform: scale(0.96);
+      transition: transform 0.2s;
+    }
+    .modal-overlay.is-open .modal-box { transform: scale(1); }
+    .modal-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 20px; }
+    .modal-close {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-form .form-input { max-width: none; }
+    @media (max-width: 480px) {
+      .modal-overlay { padding: 16px; }
+      .modal-box { padding: 22px 18px; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="page-title">Emergency contacts</h1>
+  <p class="page-desc">These are the contacts who receive all SMS sent by the helmet via SIM800L: when an accident is detected, the ESP32 sends SOS messages to every phone number listed here. Add family, friends, or emergency services so they get accident and driver status alerts.</p>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">SOS contacts (SIM800L will send to these numbers)</span>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-open-add-modal">Add contact</button>
+    </div>
+    {% if request.args.get('error') %}<div id="has-add-error" hidden></div>{% endif %}
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Phone</th>
+            <th>Email</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for c in contacts %}
+          <tr>
+            <td>{{ c.name }}</td>
+            <td>{{ c.phone or '—' }}</td>
+            <td>{{ c.email or '—' }}</td>
+            <td>
+              <form action="{{ url_for('emergency_contact_delete', cid=c.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Remove this contact?');">
+                <button type="submit" class="btn btn-danger btn-sm">Remove</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="4" class="empty-state">No contacts yet. Add one using the button above.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="add-contact-modal" aria-hidden="true">
+    <div class="modal-box" role="dialog" aria-labelledby="add-modal-title">
+      <button type="button" class="modal-close" id="btn-close-add-modal" aria-label="Close">&times;</button>
+      <h2 class="modal-title" id="add-modal-title">Add contact</h2>
+      <p class="page-desc" style="margin-bottom: 16px;">This contact will receive SMS from the helmet (SIM800L) when an accident happens or when driver status alerts are sent.</p>
+      {% if request.args.get('error') %}<p class="msg-error">{{ request.args.get('error') }}</p>{% endif %}
+      <form action="{{ url_for('emergency_contact_add') }}" method="post" class="modal-form">
+        <div class="form-group">
+          <label class="form-label">Name *</label>
+          <input type="text" name="name" class="form-input" required placeholder="Name" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone * (receives accident & status SMS via SIM800L)</label>
+          <input type="text" name="phone" class="form-input" required placeholder="+639123456789" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email (optional)</label>
+          <input type="email" name="email" class="form-input" placeholder="email@example.com" />
+        </div>
+        <button type="submit" class="btn btn-primary">Add contact</button>
+        <button type="button" class="btn btn-secondary" id="btn-cancel-add-modal" style="margin-left:10px;">Cancel</button>
+      </form>
+    </div>
+  </div>
+
+  <script>
+    (function() {
+      var modal = document.getElementById('add-contact-modal');
+      var openBtn = document.getElementById('btn-open-add-modal');
+      var closeBtn = document.getElementById('btn-close-add-modal');
+      var cancelBtn = document.getElementById('btn-cancel-add-modal');
+      function openModal() {
+        modal.classList.add('is-open');
+        modal.setAttribute('aria-hidden', 'false');
+      }
+      function closeModal() {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+      if (openBtn) openBtn.addEventListener('click', openModal);
+      if (closeBtn) closeBtn.addEventListener('click', closeModal);
+      if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+      modal.addEventListener('click', function(e) {
+        if (e.target === modal) closeModal();
+      });
+      if (document.getElementById('has-add-error')) openModal();
+    })();
+  </script>
+{% endblock %}

@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Dash cam – Guardian Helmet{% endblock %}
+{% block nav_sub %}Dash cam{% endblock %}
+{% block head %}
+  <style>
+    .cam-page-wrap { max-width: 900px; }
+    .cam-stream-wrap { position: relative; background: #000; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); min-height: 280px; }
+    .cam-stream-wrap img { display: block; width: 100%; height: auto; max-height: 70vh; object-fit: contain; }
+    .cam-status { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 0.9rem; color: var(--text-muted); }
+    .cam-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 8px var(--success); animation: cam-pulse 2s ease-in-out infinite; }
+    .cam-status.off .cam-status-dot { background: var(--text-muted); animation: none; }
+    @keyframes cam-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    .cam-placeholder { padding: 48px 24px; text-align: center; background: var(--bg-elevated); border-radius: var(--radius-sm); border: 1px solid var(--border); }
+    .cam-placeholder p { margin: 0 0 12px; color: var(--text-muted); font-size: 0.95rem; }
+    .cam-placeholder code { font-size: 0.85rem; background: var(--bg-card); padding: 2px 8px; border-radius: 4px; }
+    @media (max-width: 768px) {
+      .cam-page-wrap { max-width: 100%; }
+      .cam-stream-wrap { min-height: 220px; }
+      .cam-status { flex-direction: column; align-items: flex-start; font-size: 0.85rem; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <div class="cam-page-wrap">
+    <h1 class="page-title">Dash cam</h1>
+    <p class="page-desc">Live view from the helmet camera. When the stream is on, the cam is working; recordings (if enabled) are saved on the ESP32-CAM SD card.</p>
+
+    {% if esp32_cam_stream_url %}
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Live stream</span>
+        <span class="card-meta">Helmet cam (ESP32-CAM)</span>
+      </div>
+      <div class="cam-stream-wrap">
+        <img src="{{ esp32_cam_stream_url }}" alt="Helmet cam live stream" title="Live view from helmet" />
+      </div>
+      <div class="cam-status">
+        <span class="cam-status-dot"></span>
+        <span>Stream is live — camera is working. To record, use the ESP32-CAM’s recording feature (e.g. SD card on the module).</span>
+      </div>
+    </div>
+    {% else %}
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Dash cam</span>
+      </div>
+      <div class="cam-placeholder">
+        <p>Helmet cam is not configured. Set the stream URL so you can see the live view and confirm the cam is working.</p>
+        <p>Set <code>ESP32_CAM_STREAM_URL</code> when starting the server, e.g. <code>http://192.168.1.100/stream</code> (your ESP32-CAM’s IP).</p>
+        <p>Recordings are stored on the ESP32-CAM’s SD card when recording is enabled on the device.</p>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+{% endblock %}

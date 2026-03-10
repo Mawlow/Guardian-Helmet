@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Accounts – Guardian Helmet{% endblock %}
+{% block nav_sub %}User accounts{% endblock %}
+{% block head %}
+  <style>
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 200;
+      padding: 24px;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.2s, visibility 0.2s;
+    }
+    .modal-overlay.is-open { opacity: 1; visibility: visible; }
+    .modal-box {
+      position: relative;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px;
+      max-width: 420px;
+      width: 100%;
+      box-shadow: 0 24px 48px rgba(0,0,0,0.4);
+      transform: scale(0.96);
+      transition: transform 0.2s;
+    }
+    .modal-overlay.is-open .modal-box { transform: scale(1); }
+    .modal-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 20px; }
+    .modal-close {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-form .form-input { max-width: none; }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="page-title">User accounts</h1>
+  <p class="page-desc">View, create, update, and delete user accounts.</p>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">View accounts</span>
+      <button type="button" class="btn btn-primary btn-sm" id="btn-open-create-modal">Create account</button>
+    </div>
+    {% if create_error %}<div id="has-create-error" hidden></div>{% endif %}
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Created</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for u in users %}
+          <tr>
+            <td>{{ u.id }}</td>
+            <td>{{ u.username }}</td>
+            <td>{{ u.email or '—' }}</td>
+            <td>{{ u.created_at }}</td>
+            <td class="actions">
+              <a href="{{ url_for('account_edit', user_id=u.id) }}" class="btn btn-secondary btn-sm">Update</a>
+              <form action="{{ url_for('account_delete', user_id=u.id) }}" method="post" style="display:inline;" onsubmit="return confirm('Delete this account?');">
+                <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+              </form>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="5" class="empty-state">No accounts yet. Create one below.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="modal-overlay" id="create-account-modal" aria-hidden="true">
+    <div class="modal-box" role="dialog" aria-labelledby="modal-title">
+      <button type="button" class="modal-close" id="btn-close-modal" aria-label="Close">&times;</button>
+      <h2 class="modal-title" id="modal-title">Create account</h2>
+      {% if create_error %}<p class="msg-error">{{ create_error }}</p>{% endif %}
+      <form action="{{ url_for('account_create') }}" method="post" class="modal-form">
+        <div class="form-group">
+          <label class="form-label">Username</label>
+          <input type="text" name="username" class="form-input" required placeholder="Username" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Password</label>
+          <input type="password" name="password" class="form-input" required placeholder="Password" />
+        </div>
+        <div class="form-group">
+          <label class="form-label">Email (optional)</label>
+          <input type="email" name="email" class="form-input" placeholder="email@example.com" />
+        </div>
+        <button type="submit" class="btn btn-primary">Create account</button>
+        <button type="button" class="btn btn-secondary" id="btn-cancel-modal" style="margin-left:10px;">Cancel</button>
+      </form>
+    </div>
+  </div>
+
+  {% if edit_user %}
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Update account</span>
+    </div>
+    {% if update_error %}<p class="msg-error">{{ update_error }}</p>{% endif %}
+    <form action="{{ url_for('account_update', user_id=edit_user.id) }}" method="post">
+      <div class="form-group">
+        <label class="form-label">Username</label>
+        <input type="text" name="username" class="form-input" value="{{ edit_user.username }}" required />
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email (optional)</label>
+        <input type="email" name="email" class="form-input" value="{{ edit_user.email or '' }}" />
+      </div>
+      <div class="form-group">
+        <label class="form-label">New password (leave blank to keep)</label>
+        <input type="password" name="new_password" class="form-input" placeholder="New password" />
+      </div>
+      <button type="submit" class="btn btn-primary">Save changes</button>
+      <a href="{{ url_for('accounts_list') }}" class="btn btn-secondary" style="margin-left:10px;">Cancel</a>
+    </form>
+  </div>
+  {% endif %}
+
+  <script>
+    (function() {
+      var modal = document.getElementById('create-account-modal');
+      var openBtn = document.getElementById('btn-open-create-modal');
+      var closeBtn = document.getElementById('btn-close-modal');
+      var cancelBtn = document.getElementById('btn-cancel-modal');
+      function openModal() {
+        modal.classList.add('is-open');
+        modal.setAttribute('aria-hidden', 'false');
+      }
+      function closeModal() {
+        modal.classList.remove('is-open');
+        modal.setAttribute('aria-hidden', 'true');
+      }
+      if (openBtn) openBtn.addEventListener('click', openModal);
+      if (closeBtn) closeBtn.addEventListener('click', closeModal);
+      if (cancelBtn) cancelBtn.addEventListener('click', closeModal);
+      modal.addEventListener('click', function(e) {
+        if (e.target === modal) closeModal();
+      });
+      if (document.getElementById('has-create-error')) openModal();
+    })();
+  </script>
+{% endblock %}

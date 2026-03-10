@@ -1,0 +1,492 @@
+{% extends "base.html" %}
+{% block title %}Dashboard – Guardian Helmet{% endblock %}
+{% block nav_sub %}Accident Monitor{% endblock %}
+{% block head %}
+  <style>
+    .coord-bars { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+    .coord-bar { font-size: 0.9rem; color: var(--text-muted); padding: 14px 18px; background: var(--bg-elevated); border-radius: var(--radius-sm); border-left: 4px solid var(--accent); flex: 1; min-width: 200px; }
+    .coord-bar a { color: var(--accent); text-decoration: none; font-weight: 500; }
+    .coord-bar a:hover { text-decoration: underline; }
+    .link-map { color: var(--accent); text-decoration: none; font-size: 0.85rem; font-weight: 500; }
+    .link-map:hover { text-decoration: underline; }
+    #map { height: 380px; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); }
+    .cam-stream-wrap { position: relative; background: #000; border-radius: var(--radius-sm); overflow: hidden; border: 1px solid var(--border); min-height: 240px; }
+    .cam-stream-wrap img { display: block; width: 100%; height: auto; max-height: 400px; object-fit: contain; }
+    .cam-stream-placeholder { padding: 48px 24px; text-align: center; color: var(--text-muted); font-size: 0.9rem; }
+    .map-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .map-legend { display: flex; gap: 16px; margin-bottom: 10px; font-size: 0.85rem; color: var(--text-muted); }
+    .map-dot { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+    .map-dot-you { background: #228be6; box-shadow: 0 0 0 2px rgba(34,139,230,0.4); }
+    .map-dot-alert { background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+    .map-dot-pin { background: #f59f00; box-shadow: 0 0 0 2px rgba(245,159,0,0.4); }
+    .destination-pin { background: none !important; border: none !important; }
+    .num-accel { color: var(--accent); font-weight: 600; }
+    .status-badge { font-size: 0.75rem; color: var(--text-muted); }
+    .status-badge.sos { color: var(--success); }
+    .route-info { display: none; margin-top: 12px; padding: 12px 18px; background: var(--bg-elevated); border-radius: var(--radius-sm); border-left: 4px solid var(--accent); font-size: 0.9rem; color: var(--text-muted); align-items: center; gap: 12px; flex-wrap: wrap; }
+    .route-info.visible { display: flex; }
+    .route-info .route-stats { font-weight: 500; color: var(--text); }
+    .get-directions-btn { background: none; border: none; cursor: pointer; padding: 0; font: inherit; color: var(--accent); font-weight: 500; text-decoration: none; }
+    .get-directions-btn:hover { text-decoration: underline; }
+    .map-search-wrap { display: flex; gap: 8px; margin-bottom: 12px; position: relative; }
+    .map-search-wrap input { flex: 1; padding: 10px 14px; border-radius: var(--radius-sm); border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text); font-size: 0.95rem; }
+    .map-search-wrap input::placeholder { color: var(--text-muted); }
+    .map-search-wrap input:focus { outline: none; border-color: var(--accent); }
+    .map-search-results { position: absolute; top: 100%; left: 0; right: 0; margin-top: 4px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow); max-height: 240px; overflow-y: auto; z-index: 500; display: none; }
+    .map-search-results.visible { display: block; }
+    .map-search-results .search-result-item { padding: 12px 14px; cursor: pointer; font-size: 0.9rem; color: var(--text); border-bottom: 1px solid var(--border); transition: background 0.15s; }
+    .map-search-results .search-result-item:last-child { border-bottom: none; }
+    .map-search-results .search-result-item:hover { background: var(--bg-hover); }
+    .map-search-results .search-result-item strong { display: block; color: var(--text); }
+    .map-search-results .search-result-item span { font-size: 0.8rem; color: var(--text-muted); }
+    .map-search-results .search-loading { padding: 16px; text-align: center; color: var(--text-muted); }
+    .map-search-hint { font-size: 0.8rem; color: var(--text-muted); margin-top: 6px; }
+
+    @media (max-width: 768px) {
+      .coord-bars { flex-direction: column; gap: 10px; margin-bottom: 12px; }
+      .coord-bar { min-width: 0; padding: 12px 14px; font-size: 0.85rem; }
+      #map { height: 280px; }
+      .map-actions { flex-direction: column; width: 100%; }
+      .map-actions .btn { width: 100%; justify-content: center; }
+      .map-legend { flex-wrap: wrap; gap: 10px; font-size: 0.8rem; }
+      .map-search-wrap { flex-direction: column; }
+      .map-search-wrap input { min-width: 0; }
+      .map-search-hint { font-size: 0.75rem; }
+      .cam-stream-wrap img { max-height: 50vh; }
+    }
+    @media (max-width: 480px) {
+      #map { height: 240px; }
+      .coord-bar { padding: 10px 12px; font-size: 0.8rem; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Guide map</span>
+      <div class="map-actions">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-center-me">Center on my location</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-center-alert">Center on latest alert</button>
+      </div>
+    </div>
+    <div class="map-legend">
+      <span class="map-legend-item"><span class="map-dot map-dot-you"></span> Your location (this device)</span>
+      <span class="map-legend-item"><span class="map-dot map-dot-alert"></span> Latest alert (helmet)</span>
+      <span class="map-legend-item"><span class="map-dot map-dot-pin"></span> Your chosen place</span>
+    </div>
+    <div class="map-search-wrap">
+      <input type="text" id="place-search" placeholder="Search for a place or address…" autocomplete="off" />
+      <button type="button" class="btn btn-primary btn-sm" id="btn-search-place">Search</button>
+      <div class="map-search-results" id="search-results"></div>
+    </div>
+    <p class="map-search-hint">Search to browse an area, then click anywhere on the map to set your destination and get directions from your location.</p>
+    <div class="coord-bars">
+      <div class="coord-bar" id="your-location-bar">Your location (this device): Allow location access or click "Center on my location".</div>
+      <div class="coord-bar" id="latest">Latest alert: No location yet</div>
+    </div>
+    <div id="map"></div>
+    <div class="route-info" id="route-info">
+      <span class="route-stats" id="route-stats">—</span>
+      <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-route">Clear route</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Accident logs</span>
+      <span class="card-meta">Auto-refresh every 5s</span>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>Map</th>
+            <th>Accel (g)</th>
+            <th>Tilt (°)</th>
+            <th>Impact / Vibration</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="logs">
+          <tr><td colspan="10" class="empty-state">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script>
+    (function() {
+      var map, userMarker, alertMarker, searchPlaceMarker;
+      var lastAlertLatLng = null;  // [lat, lon]
+      var lastUserLatLng = null;   // [lat, lon]
+      var NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+
+      function initMap() {
+        map = L.map('map').setView([12.8797, 121.7740], 6);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+        }).addTo(map);
+        userMarker = null;
+        alertMarker = null;
+        searchPlaceMarker = null;
+        map.on('click', function(e) {
+          setDestinationFromMapClick(e.latlng.lat, e.latlng.lng);
+        });
+      }
+      function onLoad() {
+        if (typeof L !== 'undefined' && !map) initMap();
+        startWatchingLocation();
+      }
+      if (document.readyState === 'complete') onLoad();
+      else window.addEventListener('load', onLoad);
+
+      var routeLayer = null;
+      var OSRM_BASE = 'https://router.project-osrm.org/route/v1/driving';
+
+      window.fmt = function(v) { return v == null ? '—' : Number(v).toFixed(4); };
+      window.googleMapsUrl = function(lat, lon) {
+        if (lat == null || lon == null) return null;
+        return 'https://www.google.com/maps?q=' + lat + ',' + lon;
+      };
+
+      function clearRoute() {
+        if (routeLayer && map) { map.removeLayer(routeLayer); routeLayer = null; }
+        if (searchPlaceMarker && map) { map.removeLayer(searchPlaceMarker); searchPlaceMarker = null; }
+        var ri = document.getElementById('route-info');
+        if (ri) { ri.classList.remove('visible'); ri.querySelector('#route-stats').textContent = '—'; }
+      }
+
+      function setDestinationFromMapClick(lat, lon) {
+        if (!map) return;
+        if (searchPlaceMarker && map) { map.removeLayer(searchPlaceMarker); }
+        var pinIcon = L.divIcon({
+          className: 'destination-pin',
+          html: '<span style="display:block;width:20px;height:20px;border-radius:50%;background:#f59f00;border:2px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></span>',
+          iconSize: [20, 20],
+          iconAnchor: [10, 10]
+        });
+        searchPlaceMarker = L.marker([lat, lon], { icon: pinIcon }).addTo(map);
+        searchPlaceMarker.bindPopup('Destination · ' + lat.toFixed(4) + ', ' + lon.toFixed(4));
+        showDirectionsTo(lat, lon);
+      }
+
+      function flyToSearchResult(lat, lon, displayName) {
+        if (!map) return;
+        map.flyTo([lat, lon], 14);
+        document.getElementById('place-search').value = displayName || '';
+        document.getElementById('search-results').classList.remove('visible');
+        document.getElementById('search-results').innerHTML = '';
+      }
+
+      function searchPlace() {
+        var query = (document.getElementById('place-search').value || '').trim();
+        var resultsEl = document.getElementById('search-results');
+        if (!query) { resultsEl.classList.remove('visible'); return; }
+        resultsEl.innerHTML = '<div class="search-loading">Searching…</div>';
+        resultsEl.classList.add('visible');
+        var url = NOMINATIM_URL + '?q=' + encodeURIComponent(query) + '&format=json&limit=6';
+        fetch(url, { headers: { 'Accept': 'application/json', 'User-Agent': 'GuardianHelmet/1.0' } }).then(function(r) { return r.json(); }).then(function(data) {
+          if (!data || data.length === 0) {
+            resultsEl.innerHTML = '<div class="search-loading">No places found.</div>';
+            return;
+          }
+          resultsEl.innerHTML = data.map(function(item) {
+            var name = item.display_name || (item.name || '') + ', ' + (item.address && item.address.country || '');
+            return '<div class="search-result-item" data-lat="' + item.lat + '" data-lon="' + item.lon + '" data-name="' + (item.display_name || '').replace(/"/g, '&quot;') + '"><strong>' + (item.name || item.display_name || 'Place') + '</strong><span>' + (item.display_name || '') + '</span></div>';
+          }).join('');
+          resultsEl.querySelectorAll('.search-result-item').forEach(function(el) {
+            el.addEventListener('click', function() {
+              var lat = parseFloat(this.getAttribute('data-lat'));
+              var lon = parseFloat(this.getAttribute('data-lon'));
+              var name = this.getAttribute('data-name') || '';
+              if (!isNaN(lat) && !isNaN(lon)) flyToSearchResult(lat, lon, name);
+            });
+          });
+        }).catch(function() {
+          resultsEl.innerHTML = '<div class="search-loading">Search failed. Try again.</div>';
+        });
+      }
+
+      function showDirectionsTo(destLat, destLon) {
+        if (!map || destLat == null || destLon == null) return;
+        var origin = lastUserLatLng;
+        if (!origin) {
+          if (!navigator.geolocation) { if (window.showSystemNotif) window.showSystemNotif('Allow location access to get directions.'); return; }
+          navigator.geolocation.getCurrentPosition(
+            function(pos) {
+              lastUserLatLng = [pos.coords.latitude, pos.coords.longitude];
+              setUserLocation(pos.coords.latitude, pos.coords.longitude);
+              fetchAndDrawRoute(pos.coords.latitude, pos.coords.longitude, destLat, destLon);
+            },
+            function() { if (window.showSystemNotif) window.showSystemNotif('Allow location access to see directions from your position.'); }
+          );
+          return;
+        }
+        fetchAndDrawRoute(origin[0], origin[1], destLat, destLon);
+      }
+
+      function fetchAndDrawRoute(originLat, originLon, destLat, destLon) {
+        var coords = originLon + ',' + originLat + ';' + destLon + ',' + destLat;
+        var url = OSRM_BASE + '/' + coords + '?overview=full&geometries=geojson';
+        document.getElementById('route-stats').textContent = 'Loading route…';
+        document.getElementById('route-info').classList.add('visible');
+        fetch(url).then(function(r) { return r.json(); }).then(function(data) {
+          if (data.code !== 'Ok' || !data.routes || !data.routes[0]) {
+            document.getElementById('route-stats').textContent = 'Route not found.';
+            return;
+          }
+          var route = data.routes[0];
+          var coords = route.geometry.coordinates;
+          var latlngs = coords.map(function(c) { return [c[1], c[0]]; });
+          if (routeLayer && map) { map.removeLayer(routeLayer); routeLayer = null; }
+          routeLayer = L.polyline(latlngs, { color: '#8E1616', weight: 5, opacity: 0.8 }).addTo(map);
+          map.fitBounds(routeLayer.getBounds(), { padding: [30, 30] });
+          var distKm = (route.distance / 1000).toFixed(1);
+          var durMin = Math.round(route.duration / 60);
+          document.getElementById('route-stats').textContent = 'Route: ' + distKm + ' km · ~' + durMin + ' min';
+          document.getElementById('route-info').classList.add('visible');
+        }).catch(function() {
+          document.getElementById('route-stats').textContent = 'Route request failed.';
+        });
+      }
+
+      window.showDirectionsTo = showDirectionsTo;
+
+      function setUserLocation(lat, lon) {
+        var bar = document.getElementById('your-location-bar');
+        if (lat == null || lon == null) {
+          bar.textContent = 'Your location (this device): Allow location access or click "Center on my location".';
+          return;
+        }
+        lastUserLatLng = [lat, lon];
+        bar.innerHTML = 'Your location (this device): Lat ' + window.fmt(lat) + '  ·  Lon ' + window.fmt(lon) + '  ·  <a href="' + window.googleMapsUrl(lat, lon) + '" target="_blank" rel="noopener">View on Google Maps</a>';
+        if (map) {
+          if (userMarker) {
+            userMarker.setLatLng([lat, lon]);
+          } else {
+            userMarker = L.circleMarker([lat, lon], {
+              radius: 10,
+              fillColor: '#228be6',
+              color: '#fff',
+              weight: 2,
+              opacity: 1,
+              fillOpacity: 0.9
+            }).addTo(map);
+            userMarker.on('click', L.DomEvent.stopPropagation);
+          }
+          if (userMarker) userMarker.bringToFront();
+          map.invalidateSize();
+        }
+      }
+
+      function startWatchingLocation() {
+        loadLatest();
+        if (!navigator.geolocation) {
+          document.getElementById('your-location-bar').textContent = 'Your location (this device): Geolocation not supported.';
+          return;
+        }
+        navigator.geolocation.watchPosition(
+          function(pos) {
+            setUserLocation(pos.coords.latitude, pos.coords.longitude);
+          },
+          function() {
+            document.getElementById('your-location-bar').textContent = 'Your location (this device): Enable location access or click "Center on my location".';
+          },
+          { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+        );
+      }
+
+      function centerOnMyDeviceLocation() {
+        if (typeof L === 'undefined') return;
+        if (!map) initMap();
+        var bar = document.getElementById('your-location-bar');
+        if (lastUserLatLng) {
+          map.invalidateSize();
+          map.setView(lastUserLatLng, 16);
+          if (window.showSystemNotif) window.showSystemNotif('Map centered on your location.');
+          return;
+        }
+        if (!navigator.geolocation) {
+          bar.textContent = 'Your location (this device): Geolocation not supported.';
+          if (window.showSystemNotif) window.showSystemNotif('Geolocation not supported.');
+          return;
+        }
+        bar.textContent = 'Your location (this device): Getting position…';
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            var lat = pos.coords.latitude;
+            var lon = pos.coords.longitude;
+            setUserLocation(lat, lon);
+            setTimeout(function() {
+              if (map) {
+                map.invalidateSize();
+                map.setView([lat, lon], 16);
+              }
+            }, 50);
+            if (window.showSystemNotif) window.showSystemNotif('Map centered on your location.');
+          },
+          function(err) {
+            bar.textContent = 'Your location (this device): Allow location access to center the map.';
+            var msg = 'Allow location access to center on your device.';
+            if (err && err.code === 1) msg = 'Location access denied. Allow it in your browser to show your position.';
+            else if (err && err.code === 3) msg = 'Location request timed out. Try again.';
+            if (window.showSystemNotif) window.showSystemNotif(msg);
+          },
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+        );
+      }
+
+      function setLatest(lat, lon, ts, alertId) {
+        var el = document.getElementById('latest');
+        var hasGps = lat != null && lon != null && (lat !== 0 || lon !== 0);
+        if (hasGps) {
+          var url = window.googleMapsUrl(lat, lon);
+          var links = (url ? '<a href="' + url + '" target="_blank" rel="noopener">View on Google Maps</a>' : '') + '  ·  <button type="button" class="get-directions-btn" data-dest-lat="' + lat + '" data-dest-lon="' + lon + '">Get directions</button>';
+          el.innerHTML = 'Latest alert: Lat ' + window.fmt(lat) + '  ·  Lon ' + window.fmt(lon) + '  ·  ' + (ts || '—') + (links ? '  ·  ' + links : '');
+          lastAlertLatLng = [lat, lon];
+          if (map) {
+            if (alertMarker) alertMarker.setLatLng([lat, lon]);
+            else {
+              alertMarker = L.circleMarker([lat, lon], {
+                radius: 12,
+                fillColor: '#8E1616',
+                color: '#fff',
+                weight: 2,
+                opacity: 1,
+                fillOpacity: 0.9
+              }).addTo(map);
+            }
+            map.setView([lat, lon], 15);
+          }
+        } else if (alertId != null) {
+          el.innerHTML = 'Latest alert: No GPS signal  ·  ' + (ts || '—') + '  ·  <button type="button" class="btn btn-secondary btn-sm btn-use-my-loc" data-alert-id="' + alertId + '">Use my location</button>';
+          lastAlertLatLng = null;
+          var btn = el.querySelector('.btn-use-my-loc');
+          if (btn) btn.addEventListener('click', function() { useMyLocationForAlert(this.getAttribute('data-alert-id')); });
+        } else {
+          el.textContent = 'Latest alert: No location yet';
+        }
+      }
+      window.setLatest = setLatest;
+
+      function useMyLocationForAlert(alertId) {
+        if (!navigator.geolocation) {
+          if (window.showSystemNotif) window.showSystemNotif('Geolocation not supported.');
+          return;
+        }
+        if (window.showSystemNotif) window.showSystemNotif('Getting your device location…');
+        navigator.geolocation.getCurrentPosition(
+          function(pos) {
+            var lat = pos.coords.latitude;
+            var lon = pos.coords.longitude;
+            fetch('/api/alerts/' + alertId + '/location', {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ latitude: lat, longitude: lon })
+            }).then(function(r) { return r.json(); }).then(function(d) {
+              if (d.status === 'ok') {
+                if (window.showSystemNotif) window.showSystemNotif('Location updated with your device position.');
+                loadLatest(); if (typeof loadAlerts === 'function') loadAlerts();
+              } else {
+                if (window.showSystemNotif) window.showSystemNotif(d.message || 'Update failed.');
+              }
+        }).catch(function() {
+          if (window.showSystemNotif) window.showSystemNotif('Failed to update location.');
+            });
+          },
+          function() {
+            if (window.showSystemNotif) window.showSystemNotif('Allow location access to use your device position.');
+          },
+          { enableHighAccuracy: true, timeout: 10000 }
+        );
+      }
+      window.useMyLocationForAlert = useMyLocationForAlert;
+
+      document.getElementById('btn-center-me').addEventListener('click', function() {
+        centerOnMyDeviceLocation();
+      });
+      document.getElementById('btn-center-alert').addEventListener('click', function() {
+        if (lastAlertLatLng && map) {
+          map.flyTo(lastAlertLatLng, 15);
+        }
+      });
+
+      document.getElementById('btn-clear-route').addEventListener('click', clearRoute);
+
+      document.getElementById('btn-search-place').addEventListener('click', searchPlace);
+      document.getElementById('place-search').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') { e.preventDefault(); searchPlace(); }
+      });
+      document.addEventListener('click', function(e) {
+        if (!e.target.closest('.map-search-wrap')) {
+          document.getElementById('search-results').classList.remove('visible');
+        }
+      });
+
+      document.body.addEventListener('click', function(e) {
+        var btn = e.target.closest('.get-directions-btn');
+        if (!btn) return;
+        e.preventDefault();
+        var lat = parseFloat(btn.getAttribute('data-dest-lat'));
+        var lon = parseFloat(btn.getAttribute('data-dest-lon'));
+        if (!isNaN(lat) && !isNaN(lon)) showDirectionsTo(lat, lon);
+      });
+
+      var params = new URLSearchParams(window.location.search);
+      var to = params.get('to');
+      if (to) {
+        var parts = to.split(',');
+        if (parts.length >= 2) {
+          var toLat = parseFloat(parts[0]), toLon = parseFloat(parts[1]);
+          if (!isNaN(toLat) && !isNaN(toLon)) setTimeout(function() { showDirectionsTo(toLat, toLon); }, 500);
+        }
+      }
+    })();
+  </script>
+  <script>
+    function loadAlerts() {
+      fetch('/api/alerts?limit=50').then(r => r.json()).then(alerts => {
+        const tbody = document.getElementById('logs');
+        if (!alerts.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No alerts yet</td></tr>'; return; }
+        const noGps = function(a) { var la = a.latitude, lo = a.longitude; return (la == null && lo == null) || (la === 0 && lo === 0); };
+        const impactCell = function(a) {
+          if (a.vibration_triggered) return '<span class="status-badge" style="color:var(--accent);" title="SW-420 impact/vibration detected">Yes</span>';
+          return '—';
+        };
+        tbody.innerHTML = alerts.map(a => {
+          const ack = a.acknowledged_at ? 'Acked ' + (a.acknowledged_at.slice(0, 19)) : '—';
+          const sos = a.sos_sent_at ? '<span class="status-badge sos">SOS sent</span>' : '<span class="status-badge">—</span>';
+          const ackBtn = a.acknowledged_at ? '<span class="status-badge">Acknowledged</span>' : '<button type="button" class="btn btn-primary btn-sm btn-ack" data-id="' + a.id + '">Acknowledge</button>';
+          const mapUrl = window.googleMapsUrl(a.latitude, a.longitude);
+          let mapLink = '—';
+          if (noGps(a)) {
+            mapLink = '<button type="button" class="btn btn-secondary btn-sm btn-use-my-loc link-map" data-alert-id="' + a.id + '">Use my location</button>';
+          } else if (mapUrl) {
+            mapLink = '<a href="' + mapUrl + '" target="_blank" rel="noopener" class="link-map">View</a> · <button type="button" class="get-directions-btn link-map" data-dest-lat="' + a.latitude + '" data-dest-lon="' + a.longitude + '">Get directions</button>';
+          }
+          return '<tr><td>' + (a.timestamp || a.created_at || '—') + '</td><td>' + window.fmt(a.latitude) + '</td><td>' + window.fmt(a.longitude) + '</td><td>' + mapLink + '</td><td class="num-accel">' + (a.acceleration != null ? a.acceleration.toFixed(2) : '—') + '</td><td>' + (a.tilt_x != null ? a.tilt_x.toFixed(1) : '—') + ' / ' + (a.tilt_y != null ? a.tilt_y.toFixed(1) : '—') + '</td><td>' + impactCell(a) + '</td><td class="status-badge">' + ack + ' · ' + sos + '</td><td>' + ackBtn + '</td></tr>';
+        }).join('');
+        tbody.querySelectorAll('.btn-ack[data-id]').forEach(btn => {
+          btn.addEventListener('click', function() {
+            this.disabled = true;
+            fetch('/api/alerts/' + this.getAttribute('data-id') + '/acknowledge', { method: 'POST' }).then(() => loadAlerts());
+          });
+        });
+        tbody.querySelectorAll('.btn-use-my-loc[data-alert-id]').forEach(btn => {
+          btn.addEventListener('click', function() {
+            if (typeof window.useMyLocationForAlert === 'function') window.useMyLocationForAlert(this.getAttribute('data-alert-id'));
+          });
+        });
+      }).catch(() => { document.getElementById('logs').innerHTML = '<tr><td colspan="10" class="empty-state">Failed to load</td></tr>'; });
+    }
+    window.refreshAlerts = loadAlerts;
+    function loadLatest() { fetch('/api/latest').then(r => r.json()).then(d => setLatest(d.latitude, d.longitude, d.timestamp, d.id)).catch(() => {}); }
+    loadAlerts(); loadLatest(); setInterval(loadAlerts, 5000); setInterval(loadLatest, 5000);
+  </script>
+{% endblock %}

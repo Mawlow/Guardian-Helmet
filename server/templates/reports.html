@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Backup & Reports – Guardian Helmet{% endblock %}
+{% block nav_sub %}Backup & reports{% endblock %}
+{% block head %}
+  <style>
+    @media (max-width: 480px) {
+      .card [style*="display: flex"] .btn { flex: 1 1 100%; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="page-title">Backup & Security</h1>
+  <p class="page-desc">Generate system reports and backup your data.</p>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Backup data</span>
+    </div>
+    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">Download your data as CSV files for backup or external use.</p>
+    <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+      <a href="{{ url_for('reports_backup_alerts') }}" class="btn btn-primary">Download alerts (CSV)</a>
+      <a href="{{ url_for('reports_backup_contacts') }}" class="btn btn-secondary">Download emergency contacts (CSV)</a>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Generate system report</span>
+    </div>
+    <p style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 20px;">Generate a text report with summary statistics and recent accident alerts.</p>
+    <a href="{{ url_for('reports_generate') }}" class="btn btn-primary">Generate report (.txt)</a>
+  </div>
+{% endblock %}

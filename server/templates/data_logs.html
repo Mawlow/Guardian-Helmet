@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Data Logs – Guardian Helmet{% endblock %}
+{% block nav_sub %}Data logs{% endblock %}
+{% block head %}
+  <style>
+    .link-map { color: var(--accent); text-decoration: none; font-size: 0.85rem; font-weight: 500; }
+    .link-map:hover { text-decoration: underline; }
+    .num-accel { color: var(--accent); font-weight: 600; }
+    @media (max-width: 768px) {
+      .card-head { flex-direction: column; align-items: flex-start; }
+      .card-head .btn { width: 100%; }
+    }
+  </style>
+{% endblock %}
+{% block content %}
+  <h1 class="page-title">Access Data Logs</h1>
+  <p class="page-desc">View and export all accident alert records.</p>
+
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Accident logs</span>
+      <a href="{{ url_for('data_logs_export') }}" class="btn btn-primary btn-sm">Export as CSV</a>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Time</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>Map</th>
+            <th>Accel (g)</th>
+            <th>Tilt X / Y</th>
+            <th>Impact / Vibration</th>
+            <th>Acknowledged</th>
+            <th>SOS sent</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in logs %}
+          <tr>
+            <td>{{ r.id }}</td>
+            <td>{{ r.timestamp or r.created_at or '—' }}</td>
+            <td>{{ "%.4f" % r.latitude if r.latitude is not none else '—' }}</td>
+            <td>{{ "%.4f" % r.longitude if r.longitude is not none else '—' }}</td>
+            <td>
+              {% if r.latitude is not none and r.longitude is not none %}
+              <a href="https://www.google.com/maps?q={{ r.latitude }},{{ r.longitude }}" target="_blank" rel="noopener" class="link-map">View on Google Maps</a>
+              · <a href="{{ url_for('index') }}?to={{ r.latitude }},{{ r.longitude }}" class="link-map">Get directions</a>
+              {% else %}—{% endif %}
+            </td>
+            <td class="num-accel">{{ "%.2f" % r.acceleration if r.acceleration is not none else '—' }}</td>
+            <td>{{ "%.1f" % r.tilt_x if r.tilt_x is not none else '—' }} / {{ "%.1f" % r.tilt_y if r.tilt_y is not none else '—' }}</td>
+            <td>{{ 'Yes' if r.vibration_triggered else '—' }}</td>
+            <td>{{ r.acknowledged_at or '—' }}</td>
+            <td>{{ r.sos_sent_at or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr><td colspan="10" class="empty-state">No logs yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+{% endblock %}
