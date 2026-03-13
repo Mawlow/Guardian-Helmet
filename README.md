@@ -4,6 +4,55 @@ ESP32 + MicroPython (Thonny) + MPU6050 + NEO-6M GPS + Flask dashboard.
 
 ---
 
+## How to set up and run
+
+### 1. Server (Flask + MySQL)
+
+1. **Install MySQL** (e.g. [XAMPP](https://www.apachefriends.org/) – start MySQL from the control panel). Defaults: `localhost`, user `root`, no password. The app will create the database and tables on first run.
+2. **Install Python 3.8+** and create a virtual environment (optional but recommended):
+   ```bash
+   cd "Guardian Helmet"
+   python -m venv venv
+   venv\Scripts\activate    # Windows
+   # source venv/bin/activate   # macOS/Linux
+   ```
+3. **Install dependencies and run the server:**
+   ```bash
+   pip install -r requirements.txt
+   cd server
+   python app.py
+   ```
+4. Open **http://localhost:5000** in your browser. On first run you’ll need to **register** an account (first user only); then log in.
+5. **(Optional)** Copy `server/.env.example` to `server/.env` and set:
+   - `ESP32_CAM_STREAM_URL=http://YOUR_CAM_IP/stream` if you use the ESP32-CAM dash cam.
+   - `MYSQL_*` only if you’re not using XAMPP defaults.
+6. Note your PC’s IP (e.g. `192.168.1.100`) – the ESP32 will need it for `SERVER_BASE`.
+
+### 2. ESP32 (helmet – accident detection)
+
+1. **Install [Thonny](https://thonny.org/)** and flash **MicroPython** for ESP32 (Tools → Options → Interpreter → MicroPython (ESP32)).
+2. **Wire the hardware** (see [Hardware wiring](#hardware-wiring-esp32) below): MPU6050 (I2C), optional NEO-6M GPS (UART2), optional SW-420 (vibration), optional SIM800L (UART1 for SMS).
+3. **Copy these files onto the ESP32** (Thonny: open file → Save copy to device):
+   - `esp32/mpu6050.py` → device
+   - `esp32/gps.py` → device (if using GPS)
+   - `esp32/gsm.py` → device (if using SIM800L for SOS SMS)
+   - `esp32/main.py` → device
+4. **Edit `main.py` on the device:**
+   - `WIFI_SSID` = your Wi‑Fi name  
+   - `WIFI_PASS` = your Wi‑Fi password  
+   - `SERVER_BASE` = `http://YOUR_PC_IP:5000` (e.g. `http://192.168.1.100:5000`)
+5. **Run** `main.py` from Thonny (or let it run on boot). In Serial/Thonny you’ll see “WiFi OK” and **ESP32 IP**. Optionally enter that IP in the web app **Settings** so the dashboard knows which device is linked.
+6. **(Optional) SOS SMS:** Add emergency contacts with **phone numbers** on the web **Emergency** page. When an accident is detected, the ESP32 fetches that list and sends SMS via SIM800L.
+
+### 3. ESP32-CAM dash cam (optional)
+
+1. Flash the camera sketch: see **[esp32_cam/README.md](esp32_cam/README.md)** (Arduino IDE, ESP32-CAM board, WiFi settings).
+2. Note the ESP32-CAM IP from Serial. Set in `server/.env`:  
+   `ESP32_CAM_STREAM_URL=http://CAM_IP/stream`
+3. Restart the Flask server. The **Dash cam** page in the web app will show the live stream.
+
+---
+
 ## File structure
 
 ```
