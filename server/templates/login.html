@@ -131,7 +131,7 @@
   <div class="login-box">
     <img src="/images/helmet.png" alt="" class="login-logo" />
     <h1>Guardian Helmet</h1>
-    <p class="login-sub">{% if register %}Create first account{% else %}Log in to continue{% endif %}</p>
+    <p class="login-sub">{% if register %}{% if has_users %}Create an account{% else %}Create first account{% endif %}{% else %}Log in to continue{% endif %}</p>
 
     {% if error %}
     <div class="msg-error">{{ error }}</div>
@@ -169,8 +169,8 @@
     </form>
     {% endif %}
 
-    {% if not register and not has_users %}
-    <p class="login-footer"><a href="{{ url_for('register_page') }}">Create first account</a></p>
+    {% if not register %}
+    <p class="login-footer"><a href="{{ url_for('register_page') }}">Sign up – create an account</a></p>
     {% endif %}
   </div>
 </body>
