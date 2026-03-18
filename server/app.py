@@ -240,25 +240,19 @@ def logout_page():
 
 @app.route("/register", methods=["GET", "POST"])
 def register_page():
-    """Create the first user account (only when no users exist)."""
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) as n FROM users")
-            count = cur.fetchone()["n"]
-    finally:
-        conn.close()
-    if count > 0:
-        return redirect(url_for("login_page"))
+    """Allow any visitor to create an account (open registration)."""
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         email = (request.form.get("email") or "").strip()
         if not username or not password:
-            return render_template("login.html", register=True, error="Username and password required.")
+            return render_template("login.html", register=True, has_users=_user_count() > 0, error="Username and password required.")
         conn = get_db()
         try:
             with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE username = %s", (username,))
+                if cur.fetchone():
+                    return render_template("login.html", register=True, has_users=_user_count() > 0, error="Username already taken. Choose another.")
                 cur.execute("INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s)",
                             (username, generate_password_hash(password), email or None))
                 uid = cur.lastrowid
@@ -268,7 +262,7 @@ def register_page():
         finally:
             conn.close()
         return redirect(url_for("index"))
-    return render_template("login.html", register=True)
+    return render_template("login.html", register=True, has_users=_user_count() > 0)
 
 
 @app.route("/")
