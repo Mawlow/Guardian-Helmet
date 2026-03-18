@@ -25,7 +25,7 @@ _last_esp32_seen = None
 ESP32_CONNECTED_SEC = 120  # consider "connected" if activity in last 2 minutes
 
 # Optional ESP32-CAM dash cam: MJPEG stream URL (e.g. http://192.168.1.100/stream)
-ESP32_CAM_STREAM_URL = os.environ.get("ESP32_CAM_STREAM_URL", "http://192.168.254.184/stream").strip()
+ESP32_CAM_STREAM_URL = os.environ.get("ESP32_CAM_STREAM_URL", "http://172.20.10.3/stream").strip()
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
