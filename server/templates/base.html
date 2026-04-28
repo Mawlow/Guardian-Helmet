@@ -529,7 +529,7 @@
     </div>
   </div>
   <nav class="nav-bar">
-    <a href="{{ url_for('index') }}" class="nav-brand">
+    <a href="{% if current_user and current_user.role == 'guardian' %}{{ url_for('guardian_dashboard') }}{% else %}{{ url_for('index') }}{% endif %}" class="nav-brand">
       <div class="nav-logo"><img src="/images/helmet.png" alt="Guardian Helmet" /></div>
       <div>
         <span class="nav-brand-text">Guardian Helmet</span>
@@ -539,11 +539,17 @@
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 6h16M4 12h16M4 18h16"/></svg>
     </button>
     <div class="nav-links" id="nav-links">
+      {% if current_user and current_user.role == 'guardian' %}
+      <a href="{{ url_for('guardian_dashboard') }}" class="{% if request.endpoint == 'guardian_dashboard' %}active{% endif %}">Dashboard</a>
+      <a href="{{ url_for('guardian_camera_page') }}" class="{% if request.endpoint == 'guardian_camera_page' %}active{% endif %}">Dash cam</a>
+      <a href="{{ url_for('guardian_emergency_page') }}" class="{% if request.endpoint == 'guardian_emergency_page' %}active{% endif %}">Emergency</a>
+      {% else %}
       <a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
       <a href="{{ url_for('accounts_list') }}" class="{% if request.endpoint and request.endpoint.startswith('account') %}active{% endif %}">Accounts</a>
       <a href="{{ url_for('emergency_page') }}" class="{% if request.endpoint == 'emergency_page' %}active{% endif %}">Emergency</a>
       <a href="{{ url_for('camera_page') }}" class="{% if request.endpoint == 'camera_page' %}active{% endif %}">Dash cam</a>
       <a href="{{ url_for('settings_page') }}" class="{% if request.endpoint == 'settings_page' %}active{% endif %}">Settings</a>
+      {% endif %}
       {% if current_user %}<a href="{{ url_for('logout_page') }}" class="nav-logout">Log out</a>{% endif %}
       <div class="nav-right">
         <div class="nav-notif-wrap {% if unacknowledged_alert_count %}has-alerts{% endif %}" id="nav-notif-wrap">
@@ -564,11 +570,17 @@
   </nav>
   <div class="nav-overlay" id="nav-overlay" aria-hidden="true"></div>
   <div class="mobile-drawer" id="mobile-drawer" aria-hidden="true">
+    {% if current_user and current_user.role == 'guardian' %}
+    <a href="{{ url_for('guardian_dashboard') }}" class="{% if request.endpoint == 'guardian_dashboard' %}active{% endif %}">Dashboard</a>
+    <a href="{{ url_for('guardian_camera_page') }}" class="{% if request.endpoint == 'guardian_camera_page' %}active{% endif %}">Dash cam</a>
+    <a href="{{ url_for('guardian_emergency_page') }}" class="{% if request.endpoint == 'guardian_emergency_page' %}active{% endif %}">Emergency</a>
+    {% else %}
     <a href="{{ url_for('index') }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
     <a href="{{ url_for('accounts_list') }}" class="{% if request.endpoint and request.endpoint.startswith('account') %}active{% endif %}">Accounts</a>
     <a href="{{ url_for('emergency_page') }}" class="{% if request.endpoint == 'emergency_page' %}active{% endif %}">Emergency</a>
     <a href="{{ url_for('camera_page') }}" class="{% if request.endpoint == 'camera_page' %}active{% endif %}">Dash cam</a>
     <a href="{{ url_for('settings_page') }}" class="{% if request.endpoint == 'settings_page' %}active{% endif %}">Settings</a>
+    {% endif %}
     {% if current_user %}<a href="{{ url_for('logout_page') }}" class="nav-logout">Log out</a>{% endif %}
   </div>
   <main class="main">

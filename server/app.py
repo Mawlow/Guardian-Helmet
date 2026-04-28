@@ -26,6 +26,8 @@ ESP32_CONNECTED_SEC = 120  # consider "connected" if activity in last 2 minutes
 
 # Optional ESP32-CAM dash cam: MJPEG stream URL (e.g. http://192.168.1.100/stream)
 ESP32_CAM_STREAM_URL = os.environ.get("ESP32_CAM_STREAM_URL", "http://172.20.10.3/stream").strip()
+FIXED_ADMIN_USERNAME = os.environ.get("FIXED_ADMIN_USERNAME", "admin").strip() or "admin"
+FIXED_ADMIN_PASSWORD = os.environ.get("FIXED_ADMIN_PASSWORD", "admin123").strip() or "admin123"
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -79,7 +81,7 @@ def get_db():
 
 # Routes that do not require login (ESP32 and public)
 LOGIN_EXEMPT = {
-    "/login", "/logout", "/register",
+    "/login", "/login/admin", "/logout",
     "/alert", "/api/ping", "/api/emergency-phones",
 }
 
@@ -98,7 +100,18 @@ def _is_login_exempt(path):
 def require_login():
     if _is_login_exempt(request.path):
         return None
-    if session.get("user_id"):
+    if session.get("user_id") or session.get("guardian_user_id"):
+        role = session.get("user_role", "admin")
+        guardian_only_endpoints = {"guardian_dashboard", "guardian_camera_page", "guardian_emergency_page"}
+        admin_only_endpoints = {
+            "index", "camera_page", "settings_page", "accounts_list", "account_create", "account_edit",
+            "account_update", "account_delete", "data_logs", "data_logs_export", "reports",
+            "reports_backup_alerts", "reports_backup_contacts", "reports_generate",
+        }
+        if role == "guardian" and request.endpoint in admin_only_endpoints:
+            return redirect(url_for("guardian_dashboard"))
+        if role == "admin" and request.endpoint in guardian_only_endpoints:
+            return redirect(url_for("index"))
         return None
     return redirect(url_for("login_page", next=request.path))
 
@@ -157,20 +170,56 @@ def init_db():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        # Keep one fixed admin account available at all times.
+        cur.execute("SELECT id FROM users WHERE username = %s", (FIXED_ADMIN_USERNAME,))
+        fixed_admin = cur.fetchone()
+        fixed_admin_hash = generate_password_hash(FIXED_ADMIN_PASSWORD)
+        if fixed_admin:
+            cur.execute(
+                "UPDATE users SET password_hash = %s WHERE id = %s",
+                (fixed_admin_hash, fixed_admin["id"]),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s)",
+                (FIXED_ADMIN_USERNAME, fixed_admin_hash, "admin@guardian.local"),
+            )
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS guardian_users (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                username VARCHAR(64) NOT NULL UNIQUE,
+                password_hash VARCHAR(256) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        cur.execute("SELECT id FROM guardian_users WHERE username = %s", ("guardian",))
+        if not cur.fetchone():
+            cur.execute(
+                "INSERT INTO guardian_users (username, password_hash) VALUES (%s, %s)",
+                ("guardian", generate_password_hash("guardian123")),
+            )
     conn.commit()
     conn.close()
 
 
 def _current_user():
     """Return dict with id, username for the logged-in user, or None."""
-    uid = session.get("user_id")
+    role = session.get("user_role", "admin")
+    uid = session.get("user_id") or session.get("guardian_user_id")
     if not uid:
         return None
     conn = get_db()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT id, username FROM users WHERE id = %s", (uid,))
-            return cur.fetchone()
+            row = cur.fetchone()
+            if not row and role == "guardian":
+                # Backward compatibility for any legacy guardian-only account.
+                cur.execute("SELECT id, username FROM guardian_users WHERE id = %s", (uid,))
+                row = cur.fetchone()
+            if row:
+                row["role"] = role
+            return row
     finally:
         conn.close()
 
@@ -209,60 +258,83 @@ def _user_count():
 
 @app.route("/login", methods=["GET", "POST"])
 def login_page():
-    """Log in with username and password."""
+    """Guardian login (default login page)."""
     if request.method == "POST":
         username = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         if not username or not password:
-            return render_template("login.html", error="Username and password required.", has_users=_user_count() > 0)
+            return render_template("login.html", error="Username and password required.", is_admin_login=False)
         conn = get_db()
         try:
             with conn.cursor() as cur:
+                # Guardian login uses normal user accounts too, so created accounts can sign in here.
                 cur.execute("SELECT id, password_hash FROM users WHERE username = %s", (username,))
                 row = cur.fetchone()
+                source = "users"
+                if not row:
+                    # Fallback for legacy guardian-only seed account.
+                    cur.execute("SELECT id, password_hash FROM guardian_users WHERE username = %s", (username,))
+                    row = cur.fetchone()
+                    source = "guardian_users"
             if not row or not check_password_hash(row["password_hash"], password):
-                return render_template("login.html", error="Invalid username or password.", has_users=_user_count() > 0)
-            session["user_id"] = row["id"]
+                return render_template("login.html", error="Invalid guardian username or password.", is_admin_login=False)
+            session.clear()
+            if source == "users":
+                session["user_id"] = row["id"]
+            else:
+                session["guardian_user_id"] = row["id"]
+            session["user_role"] = "guardian"
             session.permanent = True
         finally:
             conn.close()
-        next_url = request.args.get("next") or url_for("index")
+        next_url = request.form.get("next") or request.args.get("next") or url_for("guardian_dashboard")
+        if not next_url.startswith("/guardian"):
+            next_url = url_for("guardian_dashboard")
         return redirect(next_url)
-    return render_template("login.html", error=request.args.get("error"), has_users=_user_count() > 0)
+    return render_template("login.html", error=request.args.get("error"), is_admin_login=False)
+
+
+@app.route("/login/admin", methods=["GET", "POST"])
+def admin_login_page():
+    """Admin login page keeps existing admin behavior."""
+    if request.method == "POST":
+        username = (request.form.get("username") or "").strip()
+        password = request.form.get("password") or ""
+        if not username or not password:
+            return render_template("login.html", error="Username and password required.", has_users=_user_count() > 0, is_admin_login=True)
+        if username != FIXED_ADMIN_USERNAME:
+            return render_template("login.html", error="Invalid admin credentials.", has_users=_user_count() > 0, is_admin_login=True)
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, password_hash FROM users WHERE username = %s", (FIXED_ADMIN_USERNAME,))
+                row = cur.fetchone()
+            if not row or not check_password_hash(row["password_hash"], password):
+                return render_template("login.html", error="Invalid admin credentials.", has_users=_user_count() > 0, is_admin_login=True)
+            session.clear()
+            session["user_id"] = row["id"]
+            session["user_role"] = "admin"
+            session.permanent = True
+        finally:
+            conn.close()
+        next_url = request.form.get("next") or request.args.get("next") or url_for("index")
+        return redirect(next_url)
+    return render_template("login.html", error=request.args.get("error"), has_users=_user_count() > 0, is_admin_login=True)
 
 
 @app.route("/logout")
 def logout_page():
     """Log out and redirect to login."""
     session.pop("user_id", None)
+    session.pop("guardian_user_id", None)
+    session.pop("user_role", None)
     return redirect(url_for("login_page"))
 
 
 @app.route("/register", methods=["GET", "POST"])
 def register_page():
-    """Allow any visitor to create an account (open registration)."""
-    if request.method == "POST":
-        username = (request.form.get("username") or "").strip()
-        password = request.form.get("password") or ""
-        email = (request.form.get("email") or "").strip()
-        if not username or not password:
-            return render_template("login.html", register=True, has_users=_user_count() > 0, error="Username and password required.")
-        conn = get_db()
-        try:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id FROM users WHERE username = %s", (username,))
-                if cur.fetchone():
-                    return render_template("login.html", register=True, has_users=_user_count() > 0, error="Username already taken. Choose another.")
-                cur.execute("INSERT INTO users (username, password_hash, email) VALUES (%s, %s, %s)",
-                            (username, generate_password_hash(password), email or None))
-                uid = cur.lastrowid
-            conn.commit()
-            session["user_id"] = uid
-            session.permanent = True
-        finally:
-            conn.close()
-        return redirect(url_for("index"))
-    return render_template("login.html", register=True, has_users=_user_count() > 0)
+    """Public registration is disabled."""
+    return redirect(url_for("login_page", error="Registration is disabled. Contact admin to create an account."))
 
 
 @app.route("/")
@@ -274,6 +346,33 @@ def index():
 def camera_page():
     """Dash cam / helmet camera: live stream and status."""
     return render_template("camera.html")
+
+
+@app.route("/guardian")
+def guardian_dashboard():
+    """Guardian dashboard."""
+    return render_template("index.html", guardian_view=True)
+
+
+@app.route("/guardian/camera")
+def guardian_camera_page():
+    """Guardian dash cam page."""
+    return render_template("camera.html", guardian_view=True)
+
+
+@app.route("/guardian/emergency")
+def guardian_emergency_page():
+    """Guardian emergency contacts page."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, email, phone, created_at FROM emergency_contacts ORDER BY id")
+            contacts = cur.fetchall()
+        for c in contacts:
+            c["created_at"] = str(c["created_at"]) if c.get("created_at") else ""
+    finally:
+        conn.close()
+    return render_template("emergency.html", contacts=contacts, guardian_view=True)
 
 
 @app.route("/settings", methods=["GET", "POST"])

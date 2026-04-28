@@ -131,7 +131,15 @@
   <div class="login-box">
     <img src="/images/helmet.png" alt="" class="login-logo" />
     <h1>Guardian Helmet</h1>
-    <p class="login-sub">{% if register %}{% if has_users %}Create an account{% else %}Create first account{% endif %}{% else %}Log in to continue{% endif %}</p>
+    <p class="login-sub">
+      {% if register %}
+        {% if has_users %}Create an account{% else %}Create first account{% endif %}
+      {% elif is_admin_login %}
+        Admin log in
+      {% else %}
+        Guardian log in
+      {% endif %}
+    </p>
 
     {% if error %}
     <div class="msg-error">{{ error }}</div>
@@ -155,7 +163,7 @@
     </form>
     <p class="login-footer" style="margin-top: 16px;"><a href="{{ url_for('login_page') }}">Back to log in</a></p>
     {% else %}
-    <form method="post" action="{{ url_for('login_page') }}">
+    <form method="post" action="{% if is_admin_login %}{{ url_for('admin_login_page') }}{% else %}{{ url_for('login_page') }}{% endif %}">
       <input type="hidden" name="next" value="{{ request.args.get('next', '') }}" />
       <div class="form-group">
         <label for="username">Username</label>
@@ -165,12 +173,14 @@
         <label for="password">Password</label>
         <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="Password" />
       </div>
-      <button type="submit" class="btn btn-primary">Log in</button>
+      <button type="submit" class="btn btn-primary">{% if is_admin_login %}Log in as admin{% else %}Log in as guardian{% endif %}</button>
     </form>
     {% endif %}
 
-    {% if not register %}
-    <p class="login-footer"><a href="{{ url_for('register_page') }}">Sign up – create an account</a></p>
+    {% if not register and not is_admin_login %}
+    <p class="login-footer"><a href="{{ url_for('admin_login_page') }}">Login as admin</a></p>
+    {% elif not register and is_admin_login %}
+    <p class="login-footer"><a href="{{ url_for('login_page') }}">Back to guardian login</a></p>
     {% endif %}
   </div>
 </body>
