@@ -58,9 +58,20 @@
       #map { height: 240px; }
       .coord-bar { padding: 10px 12px; font-size: 0.8rem; }
     }
+    {% if guardian_view %}
+    .map-actions,
+    .map-search-wrap,
+    .map-search-hint,
+    .coord-bars {
+      display: none !important;
+    }
+    {% endif %}
   </style>
 {% endblock %}
 {% block content %}
+  {% if guardian_view and current_user %}
+  <p class="page-desc" style="margin-bottom: 16px;">Welcome, {{ current_user.username }}.</p>
+  {% endif %}
   <div class="card">
     <div class="card-head">
       <span class="card-title">Guide map</span>
@@ -122,9 +133,12 @@
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
   <script>
     (function() {
+      var guardianView = {{ 'true' if guardian_view else 'false' }};
+      var guardianCenteredOnDevice = false;
       var map, userMarker, alertMarker, searchPlaceMarker;
       var lastAlertLatLng = null;  // [lat, lon]
       var lastUserLatLng = null;   // [lat, lon]
+      var autoLocationPatchedIds = {}; // prevent repeated auto-patch spam per alert
       var NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
 
       function initMap() {
@@ -132,6 +146,11 @@
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
         }).addTo(map);
+        // Layer order: user marker below, alert marker above.
+        if (!map.getPane('userPane')) map.createPane('userPane');
+        if (!map.getPane('alertPane')) map.createPane('alertPane');
+        map.getPane('userPane').style.zIndex = 640;
+        map.getPane('alertPane').style.zIndex = 690;
         userMarker = null;
         alertMarker = null;
         searchPlaceMarker = null;
@@ -261,16 +280,18 @@
       function setUserLocation(lat, lon) {
         var bar = document.getElementById('your-location-bar');
         if (lat == null || lon == null) {
-          bar.textContent = 'Your location (this device): Allow location access or click "Center on my location".';
+          if (bar) bar.textContent = 'Your location (this device): Allow location access or click "Center on my location".';
           return;
         }
         lastUserLatLng = [lat, lon];
-        bar.innerHTML = 'Your location (this device): Lat ' + window.fmt(lat) + '  ·  Lon ' + window.fmt(lon) + '  ·  <a href="' + window.googleMapsUrl(lat, lon) + '" target="_blank" rel="noopener">View on Google Maps</a>';
+        window.lastUserLatLng = lastUserLatLng;
+        if (bar) bar.innerHTML = 'Your location (this device): Lat ' + window.fmt(lat) + '  ·  Lon ' + window.fmt(lon) + '  ·  <a href="' + window.googleMapsUrl(lat, lon) + '" target="_blank" rel="noopener">View on Google Maps</a>';
         if (map) {
           if (userMarker) {
             userMarker.setLatLng([lat, lon]);
           } else {
             userMarker = L.circleMarker([lat, lon], {
+              pane: 'userPane',
               radius: 10,
               fillColor: '#228be6',
               color: '#fff',
@@ -281,8 +302,13 @@
             userMarker.on('click', L.DomEvent.stopPropagation);
           }
           if (userMarker) userMarker.bringToFront();
+          if (guardianView && !guardianCenteredOnDevice) {
+            map.setView([lat, lon], 16);
+            guardianCenteredOnDevice = true;
+          }
           map.invalidateSize();
         }
+        if (typeof loadAlerts === 'function') loadAlerts();
       }
 
       function startWatchingLocation() {
@@ -354,6 +380,7 @@
             if (alertMarker) alertMarker.setLatLng([lat, lon]);
             else {
               alertMarker = L.circleMarker([lat, lon], {
+                pane: 'alertPane',
                 radius: 12,
                 fillColor: '#8E1616',
                 color: '#fff',
@@ -362,6 +389,7 @@
                 fillOpacity: 0.9
               }).addTo(map);
             }
+            if (alertMarker) alertMarker.bringToFront();
             map.setView([lat, lon], 15);
           }
         } else if (alertId != null) {
@@ -408,19 +436,24 @@
       }
       window.useMyLocationForAlert = useMyLocationForAlert;
 
-      document.getElementById('btn-center-me').addEventListener('click', function() {
+      var btnCenterMe = document.getElementById('btn-center-me');
+      if (btnCenterMe) btnCenterMe.addEventListener('click', function() {
         centerOnMyDeviceLocation();
       });
-      document.getElementById('btn-center-alert').addEventListener('click', function() {
+      var btnCenterAlert = document.getElementById('btn-center-alert');
+      if (btnCenterAlert) btnCenterAlert.addEventListener('click', function() {
         if (lastAlertLatLng && map) {
           map.flyTo(lastAlertLatLng, 15);
         }
       });
 
-      document.getElementById('btn-clear-route').addEventListener('click', clearRoute);
+      var btnClearRoute = document.getElementById('btn-clear-route');
+      if (btnClearRoute) btnClearRoute.addEventListener('click', clearRoute);
 
-      document.getElementById('btn-search-place').addEventListener('click', searchPlace);
-      document.getElementById('place-search').addEventListener('keydown', function(e) {
+      var btnSearchPlace = document.getElementById('btn-search-place');
+      if (btnSearchPlace) btnSearchPlace.addEventListener('click', searchPlace);
+      var placeSearchInput = document.getElementById('place-search');
+      if (placeSearchInput) placeSearchInput.addEventListener('keydown', function(e) {
         if (e.key === 'Enter') { e.preventDefault(); searchPlace(); }
       });
       document.addEventListener('click', function(e) {
@@ -450,8 +483,33 @@
     })();
   </script>
   <script>
+    window.autoLocationPatchedIds = window.autoLocationPatchedIds || {};
+    function autoUseDeviceLocationForZeroGpsAlerts(alerts) {
+      if (!alerts || !alerts.length || !window.lastUserLatLng) return;
+      const noGps = function(a) { var la = a.latitude, lo = a.longitude; return (la == null && lo == null) || (la === 0 && lo === 0); };
+      const pending = alerts.filter(a => noGps(a) && !window.autoLocationPatchedIds[a.id]);
+      if (!pending.length) return;
+      pending.forEach(function(a) {
+        window.autoLocationPatchedIds[a.id] = true;
+        fetch('/api/alerts/' + a.id + '/location', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ latitude: window.lastUserLatLng[0], longitude: window.lastUserLatLng[1] })
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          if (d.status !== 'ok') {
+            delete window.autoLocationPatchedIds[a.id];
+          } else if (window.refreshAlerts) {
+            window.refreshAlerts();
+          }
+        }).catch(function() {
+          delete window.autoLocationPatchedIds[a.id];
+        });
+      });
+    }
+
     function loadAlerts() {
       fetch('/api/alerts?limit=50').then(r => r.json()).then(alerts => {
+        autoUseDeviceLocationForZeroGpsAlerts(alerts);
         const tbody = document.getElementById('logs');
         if (!alerts.length) { tbody.innerHTML = '<tr><td colspan="10" class="empty-state">No alerts yet</td></tr>'; return; }
         const noGps = function(a) { var la = a.latitude, lo = a.longitude; return (la == null && lo == null) || (la === 0 && lo === 0); };
