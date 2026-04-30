@@ -4,6 +4,7 @@ import json
 import os
 import ssl
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
@@ -40,6 +41,7 @@ SEMAPHORE_SMS_BASE_URL = os.environ.get("SEMAPHORE_SMS_BASE_URL", "https://api.s
 SEMAPHORE_SSL_VERIFY = os.environ.get("SEMAPHORE_SSL_VERIFY", "1").strip().lower() in {"1", "true", "yes", "on"}
 SEMAPHORE_USE_PRIORITY = os.environ.get("SEMAPHORE_USE_PRIORITY", "0").strip().lower() in {"1", "true", "yes", "on"}
 SEMAPHORE_QUERY_STRING = os.environ.get("SEMAPHORE_QUERY_STRING", "0").strip().lower() in {"1", "true", "yes", "on"}
+SMS_TIMEZONE = os.environ.get("SMS_TIMEZONE", "Asia/Manila").strip() or "Asia/Manila"
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -459,16 +461,42 @@ def _format_sms_phone(phone):
     return p
 
 
+def _format_sms_time(ts):
+    """Format alert timestamp to local timezone for SMS readability."""
+    try:
+        tz = ZoneInfo(SMS_TIMEZONE)
+    except Exception:
+        tz = timezone.utc
+
+    dt = None
+    if isinstance(ts, str) and ts.strip():
+        raw = ts.strip().replace("Z", "+00:00")
+        try:
+            dt = datetime.fromisoformat(raw)
+        except Exception:
+            dt = None
+
+    if dt is None:
+        dt = datetime.now(timezone.utc)
+    elif dt.tzinfo is None:
+        # ESP payloads are typically UTC-like but may omit timezone.
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    local_dt = dt.astimezone(tz)
+    return local_dt.strftime("%Y-%m-%d %I:%M:%S %p"), str(tz)
+
+
 def _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered):
     kind = "ACCIDENT ALERT" if not vibration_triggered else "VIBRATION + ACCIDENT ALERT"
     trigger = "vibration + sensor thresholds" if vibration_triggered else "sensor thresholds (acceleration/tilt)"
     map_url = f"https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+    time_text, tz_name = _format_sms_time(ts)
     return (
         "GUARDIAN HELMET ACCIDENT LOG\n"
         f"Type: {kind}\n"
         f"Alert ID: {alert_id}\n"
         f"Trigger: {trigger}\n"
-        f"Time (UTC): {ts}\n"
+        f"Time ({tz_name}): {time_text}\n"
         f"Coordinates: {lat:.6f}, {lon:.6f}\n"
         f"Map: {map_url}\n"
         f"Acceleration: {accel:.2f} g\n"
