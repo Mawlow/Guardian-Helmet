@@ -54,11 +54,18 @@
 {% block content %}
   <h1 class="page-title">Emergency contacts</h1>
   <p class="page-desc">These are the contacts who receive all SMS sent by the helmet via SIM800L: when an accident is detected, the ESP32 sends SOS messages to every phone number listed here. Add family, friends, or emergency services so they get accident and driver status alerts.</p>
+  {% if request.args.get('success') %}<p class="msg-ok">{{ request.args.get('success') }}</p>{% endif %}
+  {% if request.args.get('error') and not request.args.get('error').startswith('Name and phone required') %}<p class="msg-error">{{ request.args.get('error') }}</p>{% endif %}
 
   <div class="card">
     <div class="card-head">
       <span class="card-title">SOS contacts (SIM800L will send to these numbers)</span>
-      <button type="button" class="btn btn-primary btn-sm" id="btn-open-add-modal">Add contact</button>
+      <div>
+        <form action="{{ url_for('emergency_test_sms') }}" method="post" style="display:inline-block; margin-right:8px;" onsubmit="return confirm('Send test SMS to all emergency contacts?');">
+          <button type="submit" class="btn btn-secondary btn-sm">Send test SMS</button>
+        </form>
+        <button type="button" class="btn btn-primary btn-sm" id="btn-open-add-modal">Add contact</button>
+      </div>
     </div>
     {% if request.args.get('error') %}<div id="has-add-error" hidden></div>{% endif %}
     <div class="table-wrap">

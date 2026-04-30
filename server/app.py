@@ -2,7 +2,11 @@
 
 import json
 import os
-from datetime import datetime
+import ssl
+from datetime import datetime, timezone
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 # Load .env from server dir so ESP32_CAM_STREAM_URL etc. can be set without env vars
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -28,6 +32,14 @@ ESP32_CONNECTED_SEC = 120  # consider "connected" if activity in last 2 minutes
 ESP32_CAM_STREAM_URL = os.environ.get("ESP32_CAM_STREAM_URL", "http://172.20.10.3/stream").strip()
 FIXED_ADMIN_USERNAME = os.environ.get("FIXED_ADMIN_USERNAME", "admin").strip() or "admin"
 FIXED_ADMIN_PASSWORD = os.environ.get("FIXED_ADMIN_PASSWORD", "admin123").strip() or "admin123"
+IPROG_SMS_API_TOKEN = os.environ.get("IPROG_SMS_API_TOKEN", "").strip()
+IPROG_SMS_BASE_URL = os.environ.get("IPROG_SMS_BASE_URL", "https://sms.iprogtech.com").strip().rstrip("/")
+IPROG_SMS_ENABLED = os.environ.get("IPROG_SMS_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+SEMAPHORE_API_KEY = os.environ.get("SEMAPHORE_API_KEY", "").strip()
+SEMAPHORE_SMS_BASE_URL = os.environ.get("SEMAPHORE_SMS_BASE_URL", "https://api.semaphore.co").strip().rstrip("/")
+SEMAPHORE_SSL_VERIFY = os.environ.get("SEMAPHORE_SSL_VERIFY", "1").strip().lower() in {"1", "true", "yes", "on"}
+SEMAPHORE_USE_PRIORITY = os.environ.get("SEMAPHORE_USE_PRIORITY", "0").strip().lower() in {"1", "true", "yes", "on"}
+SEMAPHORE_QUERY_STRING = os.environ.get("SEMAPHORE_QUERY_STRING", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -403,7 +415,168 @@ def _normalize_phone(phone):
 
 def _touch_esp32_seen():
     global _last_esp32_seen
-    _last_esp32_seen = datetime.utcnow()
+    _last_esp32_seen = datetime.now(timezone.utc)
+
+
+def _get_emergency_phones():
+    """Read emergency contacts with phone values and normalize them."""
+    conn = get_db()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT phone FROM emergency_contacts WHERE phone IS NOT NULL AND phone != ''")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    phones = []
+    for r in rows:
+        p = _normalize_phone(r.get("phone"))
+        if p:
+            phones.append(p)
+    return phones
+
+
+def _format_sms_phone(phone):
+    """Format for iProg endpoint; expects PH mobile number, +63 or 09 accepted."""
+    if not phone:
+        return None
+    p = str(phone).strip()
+    if p.startswith("+"):
+        p = p[1:]
+    return p
+
+
+def _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered):
+    kind = "ACCIDENT ALERT" if not vibration_triggered else "VIBRATION + ACCIDENT ALERT"
+    trigger = "vibration + sensor thresholds" if vibration_triggered else "sensor thresholds (acceleration/tilt)"
+    map_url = f"https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+    return (
+        "GUARDIAN HELMET ACCIDENT LOG\n"
+        f"Type: {kind}\n"
+        f"Alert ID: {alert_id}\n"
+        f"Trigger: {trigger}\n"
+        f"Time (UTC): {ts}\n"
+        f"Coordinates: {lat:.6f}, {lon:.6f}\n"
+        f"Map: {map_url}\n"
+        f"Acceleration: {accel:.2f} g\n"
+        f"Tilt X: {tilt_x:.1f} deg\n"
+        f"Tilt Y: {tilt_y:.1f} deg\n"
+        "Action: Contact the rider immediately and verify condition."
+    )
+
+
+def _send_iprog_sms(phone_number, message):
+    """Send one SMS via iProg SMS API."""
+    if not IPROG_SMS_ENABLED:
+        return False, "disabled"
+    if not IPROG_SMS_API_TOKEN:
+        return False, "missing_token"
+    endpoint = f"{IPROG_SMS_BASE_URL}/api/v1/sms_messages"
+    payload = {
+        "api_token": IPROG_SMS_API_TOKEN,
+        "phone_number": _format_sms_phone(phone_number),
+        "message": message,
+    }
+    body = json.dumps(payload).encode("utf-8")
+    req = urlrequest.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=10) as resp:
+            resp_body = resp.read().decode("utf-8", errors="ignore")
+            if 200 <= resp.status < 300:
+                # iProg may return HTTP 200 even when provider-level status is failed.
+                # Count as success only when body clearly indicates accepted/sent state.
+                try:
+                    data = json.loads(resp_body) if resp_body else {}
+                except Exception:
+                    data = {}
+                status = str(data.get("status", "")).strip().lower()
+                success_flag = data.get("success")
+                has_message_id = bool(data.get("message_id") or data.get("id"))
+                accepted_statuses = {"ok", "success", "sent", "queued", "accepted"}
+                if success_flag is True or status in accepted_statuses or has_message_id:
+                    return True, resp_body or "accepted"
+                return False, f"provider_rejected:{(resp_body or 'empty response')[:240]}"
+            return False, f"http_{resp.status}:{resp_body[:240]}"
+    except urlerror.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="ignore") if hasattr(e, "read") else str(e)
+        return False, f"http_{e.code}:{err_body[:240]}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _send_semaphore_sms(phone_number, message):
+    """Send one SMS via Semaphore API."""
+    if not SEMAPHORE_API_KEY:
+        return False, "missing_semaphore_api_key"
+    endpoint = f"{SEMAPHORE_SMS_BASE_URL}/api/v4/messages"
+    payload = {
+        "apikey": SEMAPHORE_API_KEY,
+        "number": _format_sms_phone(phone_number),
+        "message": message,
+    }
+    if SEMAPHORE_USE_PRIORITY:
+        payload["priority"] = 1
+
+    body = None
+    request_url = endpoint
+    if SEMAPHORE_QUERY_STRING:
+        request_url = endpoint + "?" + urlparse.urlencode(payload)
+    else:
+        body = urlparse.urlencode(payload).encode("utf-8")
+
+    req = urlrequest.Request(
+        request_url,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        method="POST",
+    )
+    ssl_context = None
+    if not SEMAPHORE_SSL_VERIFY:
+        ssl_context = ssl._create_unverified_context()
+    try:
+        with urlrequest.urlopen(req, timeout=10, context=ssl_context) as resp:
+            resp_body = resp.read().decode("utf-8", errors="ignore")
+            if not (200 <= resp.status < 300):
+                return False, f"http_{resp.status}:{resp_body[:240]}"
+            try:
+                data = json.loads(resp_body) if resp_body else []
+            except Exception:
+                data = []
+            # Typical Semaphore response is a list with status like "Queued"/"Pending"/"Sent".
+            item = data[0] if isinstance(data, list) and data else {}
+            status = str(item.get("status", "")).strip().lower()
+            accepted_statuses = {"queued", "pending", "sent", "success"}
+            if status in accepted_statuses or item.get("message_id") or item.get("id"):
+                return True, resp_body or "accepted"
+            return False, f"provider_rejected:{(resp_body or 'empty response')[:240]}"
+    except urlerror.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="ignore") if hasattr(e, "read") else str(e)
+        return False, f"http_{e.code}:{err_body[:240]}"
+    except Exception as e:
+        return False, str(e)
+
+
+def _send_alert_sms_to_contacts(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered):
+    """Send accident SMS to all emergency contacts."""
+    phones = _get_emergency_phones()
+    if not phones:
+        return 0, 0, "no_contacts"
+    msg = _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered)
+    ok_count = 0
+    fail_count = 0
+    last_error = ""
+    for p in phones:
+        ok, info = _send_semaphore_sms(p, msg) if SEMAPHORE_API_KEY else _send_iprog_sms(p, msg)
+        if ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+            last_error = info
+    return ok_count, fail_count, last_error
 
 
 @app.route("/api/ping", methods=["GET"])
@@ -417,7 +590,7 @@ def api_ping():
 def api_status():
     """Dashboard polls this to show Live vs Offline and nav bell dot (unacknowledged alerts)."""
     global _last_esp32_seen
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     connected = False
     if _last_esp32_seen is not None:
         delta = (now - _last_esp32_seen).total_seconds()
@@ -430,7 +603,7 @@ def api_status():
 
 @app.route("/alert", methods=["POST"])
 def alert():
-    """1. Receive Accident Alerts from ESP32. SOS SMS is sent by ESP32 via SIM800L (see /api/emergency-phones)."""
+    """1. Receive accident alerts from ESP32 and optionally send guardian SMS via iProg API."""
     _touch_esp32_seen()
     try:
         data = request.get_json(force=True, silent=True) or {}
@@ -439,7 +612,7 @@ def alert():
         accel = float(data.get("acceleration", 0))
         tilt_x = float(data.get("tilt_x", 0))
         tilt_y = float(data.get("tilt_y", 0))
-        ts = data.get("timestamp", datetime.utcnow().isoformat())
+        ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
         vibration_triggered = bool(data.get("vibration_triggered", False))
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "Invalid payload"}), 400
@@ -456,24 +629,37 @@ def alert():
         conn.commit()
     finally:
         conn.close()
-    return jsonify({"status": "ok", "alert_id": alert_id})
+    sent_ok, sent_fail, sms_error = _send_alert_sms_to_contacts(
+        alert_id=alert_id,
+        lat=lat,
+        lon=lon,
+        accel=accel,
+        tilt_x=tilt_x,
+        tilt_y=tilt_y,
+        ts=ts,
+        vibration_triggered=vibration_triggered,
+    )
+    if sent_ok > 0:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE alerts SET sos_sent_at = CURRENT_TIMESTAMP WHERE id = %s", (alert_id,))
+            conn.commit()
+        finally:
+            conn.close()
+    return jsonify({
+        "status": "ok",
+        "alert_id": alert_id,
+        "sms_sent": sent_ok,
+        "sms_failed": sent_fail,
+        "sms_error": sms_error if sent_fail else "",
+    })
 
 
 @app.route("/api/emergency-phones")
 def api_emergency_phones():
     """Return list of emergency contact phone numbers for ESP32 to send SOS SMS via SIM800L."""
-    conn = get_db()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT phone FROM emergency_contacts WHERE phone IS NOT NULL AND phone != ''")
-            rows = cur.fetchall()
-    finally:
-        conn.close()
-    phones = []
-    for r in rows:
-        p = _normalize_phone(r.get("phone"))
-        if p:
-            phones.append(p)
+    phones = _get_emergency_phones()
     return jsonify({"phones": phones})
 
 
@@ -625,6 +811,43 @@ def emergency_contact_delete(cid):
     finally:
         conn.close()
     return redirect(url_for("emergency_page"))
+
+
+@app.route("/emergency/test-sms", methods=["POST"])
+def emergency_test_sms():
+    """Send a test SMS to all emergency contacts via iProg API."""
+    now_ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    msg = (
+        "Guardian Helmet TEST ALERT\n"
+        f"Time: {now_ts}\n"
+        "This is a test SMS from your Guardian Helmet system."
+    )
+    phones = _get_emergency_phones()
+    if not phones:
+        return redirect(url_for("emergency_page") + "?error=No emergency contact numbers found.")
+
+    ok_count = 0
+    fail_count = 0
+    last_error = ""
+    for p in phones:
+        ok, info = _send_semaphore_sms(p, msg) if SEMAPHORE_API_KEY else _send_iprog_sms(p, msg)
+        if ok:
+            ok_count += 1
+        else:
+            fail_count += 1
+            last_error = info
+
+    if ok_count > 0 and fail_count == 0:
+        return redirect(url_for("emergency_page") + f"?success=Test SMS sent to {ok_count} contact(s).")
+    if ok_count > 0 and fail_count > 0:
+        msg = f"Test SMS sent to {ok_count} contact(s), failed for {fail_count}."
+        if last_error:
+            msg += f" Last error: {last_error}"
+        return redirect(url_for("emergency_page") + "?success=" + urlparse.quote(msg))
+    err_msg = "Test SMS failed for all contacts."
+    if last_error:
+        err_msg = f"{err_msg} ({last_error})"
+    return redirect(url_for("emergency_page") + "?error=" + urlparse.quote(err_msg))
 
 
 # --- User Account Management ---
