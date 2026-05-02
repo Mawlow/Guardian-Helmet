@@ -50,6 +50,24 @@ NOMINATIM_BASE_URL = os.environ.get("NOMINATIM_BASE_URL", "https://nominatim.ope
 NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "GuardianHelmet/1.0 (accident-alerts)").strip() or "GuardianHelmet/1.0"
 REVERSE_GEOCODE_TIMEOUT = float(os.environ.get("REVERSE_GEOCODE_TIMEOUT", "8"))
 REVERSE_GEOCODE_MAX_CHARS = int(os.environ.get("REVERSE_GEOCODE_MAX_CHARS", "350"))
+# If Nominatim returns no address, try Photon (Komoot) reverse geocoding (no API key).
+PHOTON_REVERSE_GEOCODE_ENABLED = os.environ.get("PHOTON_REVERSE_GEOCODE_ENABLED", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PHOTON_BASE_URL = os.environ.get("PHOTON_BASE_URL", "https://photon.komoot.io").strip().rstrip("/")
+PHOTON_REVERSE_TIMEOUT = float(os.environ.get("PHOTON_REVERSE_TIMEOUT", "8"))
+# Last-resort coarse place name (no API key; used only if Nominatim + Photon yield nothing).
+BIGDATACLOUD_REVERSE_GEOCODE_ENABLED = os.environ.get(
+    "BIGDATACLOUD_REVERSE_GEOCODE_ENABLED", "1"
+).strip().lower() in {"1", "true", "yes", "on"}
+BIGDATACLOUD_REVERSE_TIMEOUT = float(os.environ.get("BIGDATACLOUD_REVERSE_TIMEOUT", "6"))
+BIGDATACLOUD_REVERSE_URL = os.environ.get(
+    "BIGDATACLOUD_REVERSE_URL",
+    "https://api.bigdatacloud.net/data/reverse-geocode-client",
+).strip().rstrip("/")
 # Approximate area from the helmet’s HTTP connection (public IP), not the GPS module
 IP_GEOLOCATION_ENABLED = os.environ.get("IP_GEOLOCATION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 IP_API_BASE = os.environ.get("IP_API_BASE", "http://ip-api.com").strip().rstrip("/")
@@ -671,25 +689,99 @@ def _address_from_nominatim_payload(data):
     return out
 
 
-def _reverse_geocode(lat, lon):
-    """Return human-readable address from coordinates via OSM Nominatim, or None."""
-    if not REVERSE_GEOCODE_ENABLED:
+def _address_from_photon_properties(props):
+    """Build a readable place string from Photon /reverse feature.properties."""
+    if not isinstance(props, dict):
         return None
-    try:
-        la = float(lat)
-        lo = float(lon)
-    except (TypeError, ValueError):
+
+    def _add(segments, s):
+        s = (s or "").strip()
+        if not s:
+            return
+        if not segments or segments[-1].lower() != s.lower():
+            segments.append(s)
+
+    segments = []
+    hn = (props.get("housenumber") or "").strip()
+    street = (props.get("street") or "").strip()
+    if hn and street:
+        _add(segments, f"{hn} {street}")
+    elif street:
+        _add(segments, street)
+    elif hn:
+        _add(segments, hn)
+
+    name = (props.get("name") or "").strip()
+    if name:
+        _add(segments, name)
+
+    for key in ("district", "neighbourhood", "locality", "borough"):
+        v = props.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+
+    city_done = False
+    for key in ("city", "town", "village", "municipality"):
+        v = props.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+            city_done = True
+            break
+
+    if not city_done:
+        for key in ("county", "state_district"):
+            v = props.get(key)
+            if isinstance(v, str) and v.strip():
+                _add(segments, v.strip())
+                break
+
+    for key in ("state", "region"):
+        v = props.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+            break
+
+    pc = props.get("postcode")
+    if isinstance(pc, str) and pc.strip():
+        _add(segments, pc.strip())
+
+    country = props.get("country")
+    if isinstance(country, str) and country.strip():
+        _add(segments, country.strip())
+
+    if len(segments) >= 2:
+        out = ", ".join(segments)
+    elif len(segments) == 1:
+        out = segments[0]
+    else:
+        out = ""
+
+    if not out or len(out) < 8:
+        parts = []
+        for key in ("name", "street", "city", "town", "state", "country"):
+            v = props.get(key)
+            if isinstance(v, str) and v.strip():
+                parts.append(v.strip())
+        out = ", ".join(parts)
+
+    if not out:
         return None
-    if abs(la) < 1e-9 and abs(lo) < 1e-9:
-        return None
-    q = urlparse.urlencode(
-        {
-            "lat": str(la),
-            "lon": str(lo),
-            "format": "json",
-            "addressdetails": "1",
-        }
-    )
+    if len(out) > REVERSE_GEOCODE_MAX_CHARS:
+        out = out[: REVERSE_GEOCODE_MAX_CHARS - 1].rstrip(" ,") + "…"
+    return out
+
+
+def _reverse_geocode_nominatim_once(lat, lon, zoom=None):
+    """Single Nominatim reverse request; zoom 0–18 improves match for sparse areas."""
+    params = {
+        "lat": str(lat),
+        "lon": str(lon),
+        "format": "json",
+        "addressdetails": "1",
+    }
+    if zoom is not None:
+        params["zoom"] = str(int(zoom))
+    q = urlparse.urlencode(params)
     url = f"{NOMINATIM_BASE_URL}/reverse?{q}"
     req = urlrequest.Request(
         url,
@@ -705,9 +797,116 @@ def _reverse_geocode(lat, lon):
             if resp.status != 200:
                 return None
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        return _address_from_nominatim_payload(data)
     except Exception:
         return None
+    if not isinstance(data, dict):
+        return None
+    if data.get("error"):
+        return None
+    return _address_from_nominatim_payload(data)
+
+
+def _reverse_geocode_photon(lat, lon):
+    """Fallback reverse geocoding via Photon (OSM-based, different index than Nominatim)."""
+    if not PHOTON_REVERSE_GEOCODE_ENABLED:
+        return None
+    q = urlparse.urlencode({"lat": str(lat), "lon": str(lon)})
+    url = f"{PHOTON_BASE_URL}/reverse?{q}"
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": NOMINATIM_USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Language": "en",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=PHOTON_REVERSE_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return None
+    features = data.get("features") if isinstance(data, dict) else None
+    if not features:
+        return None
+    props = features[0].get("properties") if isinstance(features[0], dict) else None
+    return _address_from_photon_properties(props or {})
+
+
+def _reverse_geocode_bigdatacloud(lat, lon):
+    """Coarse locality/city/region when OSM-based reverse geocoders have no feature here."""
+    if not BIGDATACLOUD_REVERSE_GEOCODE_ENABLED:
+        return None
+    q = urlparse.urlencode(
+        {
+            "latitude": str(lat),
+            "longitude": str(lon),
+            "localityLanguage": "en",
+        }
+    )
+    url = f"{BIGDATACLOUD_REVERSE_URL}?{q}"
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": NOMINATIM_USER_AGENT,
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=BIGDATACLOUD_REVERSE_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    city = (data.get("city") or "").strip()
+    locality = (data.get("locality") or "").strip()
+    region = (data.get("principalSubdivision") or "").strip()
+    country = (data.get("countryName") or "").strip()
+    segments = []
+    seen = set()
+    for s in (locality, city, region, country):
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        segments.append(s)
+    out = ", ".join(segments) if segments else ""
+    if not out:
+        return None
+    if len(out) > REVERSE_GEOCODE_MAX_CHARS:
+        out = out[: REVERSE_GEOCODE_MAX_CHARS - 1].rstrip(" ,") + "…"
+    return out
+
+
+def _reverse_geocode(lat, lon):
+    """Human-readable address: Nominatim (zoom retries), Photon, then BigDataCloud coarse fallback."""
+    if not REVERSE_GEOCODE_ENABLED:
+        return None
+    try:
+        la = float(lat)
+        lo = float(lon)
+    except (TypeError, ValueError):
+        return None
+    if abs(la) < 1e-9 and abs(lo) < 1e-9:
+        return None
+
+    for zoom in (None, 18, 16, 14, 10, 6):
+        addr = _reverse_geocode_nominatim_once(la, lo, zoom)
+        if addr:
+            return addr
+
+    addr = _reverse_geocode_photon(la, lo)
+    if addr:
+        return addr
+    return _reverse_geocode_bigdatacloud(la, lo)
 
 
 def _format_sms_time(ts):
