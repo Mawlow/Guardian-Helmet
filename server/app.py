@@ -1,5 +1,6 @@
 # app.py - Flask server for Smart Helmet accident alerts (MySQL backend)
 
+import ipaddress
 import json
 import os
 import ssl
@@ -48,6 +49,9 @@ NOMINATIM_BASE_URL = os.environ.get("NOMINATIM_BASE_URL", "https://nominatim.ope
 NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "GuardianHelmet/1.0 (accident-alerts)").strip() or "GuardianHelmet/1.0"
 REVERSE_GEOCODE_TIMEOUT = float(os.environ.get("REVERSE_GEOCODE_TIMEOUT", "8"))
 REVERSE_GEOCODE_MAX_CHARS = int(os.environ.get("REVERSE_GEOCODE_MAX_CHARS", "350"))
+# Approximate area from the helmet’s HTTP connection (public IP), not the GPS module
+IP_GEOLOCATION_ENABLED = os.environ.get("IP_GEOLOCATION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+IP_API_BASE = os.environ.get("IP_API_BASE", "http://ip-api.com").strip().rstrip("/")
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -467,6 +471,138 @@ def _format_sms_phone(phone):
     return p
 
 
+def _get_client_ip(req):
+    """IP of the device that sent the HTTP request (helmet ESP32), honoring reverse proxies."""
+    if req is None:
+        return None
+    for key in ("X-Forwarded-For", "X-Real-IP", "CF-Connecting-IP"):
+        h = req.headers.get(key)
+        if h:
+            return h.split(",")[0].strip()
+    return (req.remote_addr or "").strip() or None
+
+
+def _lookup_ip_geo(ip):
+    """
+    Approximate city/region from the helmet's public IP (where it connects to the internet).
+    Does not use the GPS module. Private/LAN IPs cannot be geolocated to a city.
+    """
+    if not ip or not IP_GEOLOCATION_ENABLED:
+        return None
+    try:
+        a = ipaddress.ip_address(ip.split("%")[0])
+        if a.is_private or a.is_loopback or a.is_reserved or a.is_link_local or a.is_multicast:
+            return {"label": None, "lat": None, "lon": None, "private": True, "ip": ip}
+    except ValueError:
+        return None
+    url = f"{IP_API_BASE}/json/{urlparse.quote(ip)}?fields=status,message,country,regionName,city,lat,lon"
+    req = urlrequest.Request(
+        url,
+        headers={"User-Agent": NOMINATIM_USER_AGENT},
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        if data.get("status") != "success":
+            return None
+        parts = [data.get("city"), data.get("regionName"), data.get("country")]
+        label = ", ".join(p for p in parts if p)
+        return {
+            "label": label or None,
+            "lat": data.get("lat"),
+            "lon": data.get("lon"),
+            "private": False,
+            "ip": ip,
+        }
+    except Exception:
+        return None
+
+
+def _address_from_nominatim_payload(data):
+    """
+    Build a readable place name from Nominatim JSON: street/house, barangay-level,
+    city, province/region, postcode, country. Falls back to display_name.
+    """
+    addr = data.get("address")
+    if not isinstance(addr, dict):
+        addr = {}
+
+    def _add(segments, s):
+        s = (s or "").strip()
+        if not s:
+            return
+        if not segments or segments[-1].lower() != s.lower():
+            segments.append(s)
+
+    segments = []
+
+    hn = (addr.get("house_number") or "").strip()
+    road = (
+        addr.get("road")
+        or addr.get("pedestrian")
+        or addr.get("path")
+        or addr.get("residential")
+        or ""
+    ).strip()
+    if hn and road:
+        _add(segments, f"{hn} {road}")
+    elif road:
+        _add(segments, road)
+    elif hn:
+        _add(segments, hn)
+
+    for key in ("neighbourhood", "suburb", "quarter", "village"):
+        v = addr.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+
+    city_done = False
+    for key in ("city_district", "town", "city", "municipality"):
+        v = addr.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+            city_done = True
+            break
+
+    if not city_done:
+        for key in ("county", "state_district"):
+            v = addr.get(key)
+            if isinstance(v, str) and v.strip():
+                _add(segments, v.strip())
+                break
+
+    for key in ("state", "region"):
+        v = addr.get(key)
+        if isinstance(v, str) and v.strip():
+            _add(segments, v.strip())
+            break
+
+    pc = addr.get("postcode")
+    if isinstance(pc, str) and pc.strip():
+        _add(segments, pc.strip())
+
+    country = addr.get("country")
+    if isinstance(country, str) and country.strip():
+        _add(segments, country.strip())
+
+    if len(segments) >= 2:
+        out = ", ".join(segments)
+    elif len(segments) == 1:
+        out = segments[0]
+    else:
+        out = ""
+
+    if not out or len(out) < 12:
+        out = (data.get("display_name") or "").strip()
+
+    if not out:
+        return None
+    if len(out) > REVERSE_GEOCODE_MAX_CHARS:
+        out = out[: REVERSE_GEOCODE_MAX_CHARS - 1].rstrip(" ,") + "…"
+    return out
+
+
 def _reverse_geocode(lat, lon):
     """Return human-readable address from coordinates via OSM Nominatim, or None."""
     if not REVERSE_GEOCODE_ENABLED:
@@ -483,7 +619,7 @@ def _reverse_geocode(lat, lon):
             "lat": str(la),
             "lon": str(lo),
             "format": "json",
-            "addressdetails": "0",
+            "addressdetails": "1",
         }
     )
     url = f"{NOMINATIM_BASE_URL}/reverse?{q}"
@@ -501,12 +637,7 @@ def _reverse_geocode(lat, lon):
             if resp.status != 200:
                 return None
             data = json.loads(resp.read().decode("utf-8", errors="ignore"))
-        addr = (data.get("display_name") or "").strip()
-        if not addr:
-            return None
-        if len(addr) > REVERSE_GEOCODE_MAX_CHARS:
-            addr = addr[: REVERSE_GEOCODE_MAX_CHARS - 1].rstrip() + "…"
-        return addr
+        return _address_from_nominatim_payload(data)
     except Exception:
         return None
 
@@ -536,24 +667,74 @@ def _format_sms_time(ts):
     return local_dt.strftime("%Y-%m-%d %I:%M:%S %p"), str(tz)
 
 
-def _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, address=None):
+def _build_alert_sms_message(
+    alert_id,
+    lat,
+    lon,
+    accel,
+    tilt_x,
+    tilt_y,
+    ts,
+    vibration_triggered,
+    place_address=None,
+    gps_stale=False,
+    device_network_label=None,
+    device_is_private_lan=False,
+    map_lat=None,
+    map_lon=None,
+    has_gps_fix=False,
+):
+    """
+    place_address: street/place name from map coordinates (Nominatim).
+    Device area: from the helmet's connection IP (not the GPS module).
+    map_lat/map_lon: coordinates for the map link (GPS if available, else IP centroid).
+    """
     kind = "ACCIDENT ALERT" if not vibration_triggered else "VIBRATION + ACCIDENT ALERT"
     trigger = "vibration + sensor thresholds" if vibration_triggered else "sensor thresholds (acceleration/tilt)"
-    map_url = f"https://maps.google.com/?q={lat:.6f},{lon:.6f}"
+    mla = float(map_lat if map_lat is not None else lat)
+    mlo = float(map_lon if map_lon is not None else lon)
+    map_url = f"https://maps.google.com/?q={mla:.6f},{mlo:.6f}"
     time_text, tz_name = _format_sms_time(ts)
-    if address:
-        addr_line = f"Location (approx): {address}"
+
+    if device_is_private_lan:
+        device_line = (
+            "Device / network area: same WiFi/LAN as your server (private IP) — "
+            "city name unavailable until the helmet uses mobile data or your server has a public URL."
+        )
+    elif device_network_label:
+        device_line = f"Device / network area (where helmet connects): {device_network_label}"
     else:
-        addr_line = "Location (approx): unavailable (no GPS fix or lookup failed — use Lat/Lon below)"
+        device_line = "Device / network area: could not resolve (check server internet / IP lookup)."
+
+    if place_address:
+        place_line = f"Place names (map position): {place_address}"
+    elif abs(mla) < 1e-9 and abs(mlo) < 1e-9:
+        place_line = "Place names (map position): unavailable — no coordinates for map."
+    else:
+        place_line = "Place names (map position): lookup failed — use Lat/Lon below."
+
+    stale_line = ""
+    if gps_stale:
+        stale_line = (
+            "\nGPS note: no satellite lock at crash — Lat/Lon are LAST KNOWN from the helmet.\n"
+        )
+
+    gps_status = "satellite fix at alert" if has_gps_fix and not gps_stale else (
+        "last known position (no lock at crash)" if gps_stale else "no fix (map uses network area if available)"
+    )
+
     return (
         "GUARDIAN HELMET ACCIDENT LOG\n"
         f"Type: {kind}\n"
         f"Alert ID: {alert_id}\n"
         f"Trigger: {trigger}\n"
         f"Time ({tz_name}): {time_text}\n"
-        f"{addr_line}\n"
-        f"Latitude: {lat:.6f}\n"
-        f"Longitude: {lon:.6f}\n"
+        f"{device_line}\n"
+        f"{place_line}\n"
+        f"{stale_line}"
+        f"GPS module: {gps_status}\n"
+        f"Latitude (map): {mla:.6f}\n"
+        f"Longitude (map): {mlo:.6f}\n"
         f"Map: {map_url}\n"
         f"Acceleration: {accel:.2f} g\n"
         f"Tilt X: {tilt_x:.1f} deg\n"
@@ -658,14 +839,56 @@ def _send_semaphore_sms(phone_number, message):
         return False, str(e)
 
 
-def _send_alert_sms_to_contacts(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered):
-    """Send accident SMS to all emergency contacts."""
+def _send_alert_sms_to_contacts(
+    alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, gps_stale=False, req=None
+):
+    """Send accident SMS. Named area uses helmet connection IP + map; GPS is separate."""
     phones = _get_emergency_phones()
     if not phones:
         return 0, 0, "no_contacts"
-    address = _reverse_geocode(lat, lon)
+    has_gps_fix = abs(float(lat)) >= 1e-9 or abs(float(lon)) >= 1e-9
+    ip_data = _lookup_ip_geo(_get_client_ip(req)) if req is not None else None
+    device_network_label = None
+    device_private = False
+    ip_lat = ip_lon = None
+    if ip_data:
+        device_private = bool(ip_data.get("private"))
+        if not device_private:
+            device_network_label = ip_data.get("label")
+            la, lo = ip_data.get("lat"), ip_data.get("lon")
+            if la is not None and lo is not None:
+                try:
+                    ip_lat, ip_lon = float(la), float(lo)
+                except (TypeError, ValueError):
+                    ip_lat, ip_lon = None, None
+
+    if has_gps_fix:
+        mla, mlo = float(lat), float(lon)
+    elif ip_lat is not None and ip_lon is not None:
+        mla, mlo = ip_lat, ip_lon
+    else:
+        mla, mlo = 0.0, 0.0
+
+    place_address = None
+    if abs(mla) >= 1e-9 or abs(mlo) >= 1e-9:
+        place_address = _reverse_geocode(mla, mlo)
+
     msg = _build_alert_sms_message(
-        alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, address=address
+        alert_id,
+        lat,
+        lon,
+        accel,
+        tilt_x,
+        tilt_y,
+        ts,
+        vibration_triggered,
+        place_address=place_address,
+        gps_stale=gps_stale,
+        device_network_label=device_network_label,
+        device_is_private_lan=device_private,
+        map_lat=mla,
+        map_lon=mlo,
+        has_gps_fix=has_gps_fix,
     )
     ok_count = 0
     fail_count = 0
@@ -715,6 +938,7 @@ def alert():
         tilt_y = float(data.get("tilt_y", 0))
         ts = data.get("timestamp", datetime.now(timezone.utc).isoformat())
         vibration_triggered = bool(data.get("vibration_triggered", False))
+        gps_stale = bool(data.get("gps_stale", False))
     except (TypeError, ValueError):
         return jsonify({"status": "error", "message": "Invalid payload"}), 400
     conn = get_db()
@@ -739,6 +963,8 @@ def alert():
         tilt_y=tilt_y,
         ts=ts,
         vibration_triggered=vibration_triggered,
+        gps_stale=gps_stale,
+        req=request,
     )
     if sent_ok > 0:
         conn = get_db()

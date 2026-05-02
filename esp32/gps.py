@@ -61,17 +61,20 @@ class GPS:
         except Exception:
             return 0.0
 
-    def get_location(self):
+    def get_location(self, max_lines=25):
         """
-        Read available UART data and try to get latest valid lat/lon from GGA.
+        Read UART and try to get latest valid lat/lon from GGA.
         Returns (latitude, longitude, has_fix).
+        Use max_lines=80+ on accident path for a better chance of a fresh fix.
         """
         lat, lon, fix = None, None, False
-        for _ in range(20):  # read up to 20 lines
+        for _ in range(max_lines):
             line = self.read_line()
             if line is None:
                 break
             la, lo, ok = self._parse_gga(line)
             if ok:
                 lat, lon, fix = la, lo, True
+        if lat is None:
+            return (0.0, 0.0, False)
         return (lat, lon, fix)

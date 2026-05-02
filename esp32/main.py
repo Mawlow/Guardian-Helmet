@@ -61,6 +61,9 @@ if mpu is None:
 last_trigger_time = 0
 last_ping_time = 0
 PING_INTERVAL_SEC = 30  # heartbeat so dashboard shows Live when ESP32 is connected
+# Last good GPS fix (used when crash happens with no satellite lock)
+_last_good_lat = None
+_last_good_lon = None
 
 
 def connect_wifi():
@@ -77,7 +80,7 @@ def connect_wifi():
     return wlan.isconnected()
 
 
-def send_alert(lat, lon, accel_g, tilt_x, tilt_y, timestamp_str, vibration_triggered=False):
+def send_alert(lat, lon, accel_g, tilt_x, tilt_y, timestamp_str, vibration_triggered=False, gps_stale=False):
     """POST to server; then fetch emergency phones and send SOS SMS via SIM800L. Returns alert_id or None."""
     import urequests
     try:
@@ -89,6 +92,7 @@ def send_alert(lat, lon, accel_g, tilt_x, tilt_y, timestamp_str, vibration_trigg
             "tilt_y": round(tilt_y, 2),
             "timestamp": timestamp_str,
             "vibration_triggered": bool(vibration_triggered),
+            "gps_stale": bool(gps_stale),
         }
         r = urequests.post(SERVER_URL, json=payload, timeout=5)
         data = r.json() if hasattr(r, "json") and r.json else {}
@@ -147,7 +151,7 @@ def send_ping():
 
 
 def main():
-    global last_trigger_time, last_ping_time
+    global last_trigger_time, last_ping_time, _last_good_lat, _last_good_lon
     print("WiFi...")
     if not connect_wifi():
         print("WiFi failed; check SSID/password and SERVER_URL")
@@ -161,6 +165,10 @@ def main():
     wlan = network.WLAN(network.STA_IF)
     while True:
         try:
+            if gps is not None:
+                la, lo, hf = gps.get_location(max_lines=15)
+                if hf:
+                    _last_good_lat, _last_good_lon = la, lo
             accel_g = mpu.get_magnitude_accel()
             tilt_x, tilt_y = mpu.get_tilt_angles()
             tilt_deg = max_tilt_deg(tilt_x, tilt_y)
@@ -177,12 +185,29 @@ def main():
                 if now - last_trigger_time >= DEBOUNCE_SEC:
                     last_trigger_time = now
                     lat, lon, has_fix = (0.0, 0.0, False)
+                    gps_stale = False
                     if gps is not None:
-                        lat, lon, has_fix = gps.get_location()
-                    if not has_fix:
+                        # Read more NMEA lines — better chance of a fix during the crash window
+                        lat, lon, has_fix = gps.get_location(max_lines=100)
+                    if has_fix:
+                        _last_good_lat, _last_good_lon = lat, lon
+                    elif _last_good_lat is not None and _last_good_lon is not None:
+                        # No lock now — send last known position so SMS can show map + address
+                        lat, lon = _last_good_lat, _last_good_lon
+                        gps_stale = True
+                    else:
                         lat, lon = 0.0, 0.0
                     ts = get_timestamp()
-                    send_alert(lat, lon, accel_g, tilt_x, tilt_y, ts, vibration_triggered=(sw420 is not None))
+                    send_alert(
+                        lat,
+                        lon,
+                        accel_g,
+                        tilt_x,
+                        tilt_y,
+                        ts,
+                        vibration_triggered=(sw420 is not None),
+                        gps_stale=gps_stale,
+                    )
             if wlan.isconnected() and (now - last_ping_time) >= PING_INTERVAL_SEC:
                 last_ping_time = now
                 send_ping()
