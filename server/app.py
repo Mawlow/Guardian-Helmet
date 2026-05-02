@@ -57,6 +57,13 @@ IP_API_BASE = os.environ.get("IP_API_BASE", "http://ip-api.com").strip().rstrip(
 SMS_USE_HELMET_GPS_FOR_ADDRESS = os.environ.get(
     "SMS_USE_HELMET_GPS_FOR_ADDRESS", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
+# When Accident logs get a refined position (dashboard “Use my location” / auto-patch), send a second SMS with that GPS.
+SMS_ON_LOCATION_UPDATE = os.environ.get("SMS_ON_LOCATION_UPDATE", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -764,6 +771,7 @@ def _build_alert_sms_message(
     has_gps_fix=False,
     sms_used_network_for_map=False,
     map_source="network",
+    dashboard_refinement=False,
 ):
     """
     Named address comes from Nominatim using map_lat/map_lon (network IP position by default).
@@ -780,6 +788,8 @@ def _build_alert_sms_message(
         source_label = "helmet GPS fix"
     elif map_source == "network":
         source_label = "device network location"
+    elif map_source == "dashboard":
+        source_label = "guardian web dashboard (device GPS)"
     else:
         source_label = "fallback location"
 
@@ -808,7 +818,11 @@ def _build_alert_sms_message(
             "\nGPS note: no satellite lock at crash — map used last known helmet GPS.\n"
         )
 
-    if SMS_USE_HELMET_GPS_FOR_ADDRESS:
+    if dashboard_refinement:
+        gps_extra = (
+            "Helmet GPS at crash: no fix. Coordinates below match Accident logs (dashboard device GPS).\n"
+        )
+    elif SMS_USE_HELMET_GPS_FOR_ADDRESS:
         gps_extra = (
             f"Helmet GPS module: {'fix at alert' if has_gps_fix and not gps_stale else ('last known' if gps_stale else 'no fix')}\n"
         )
@@ -822,13 +836,18 @@ def _build_alert_sms_message(
 
     if map_source == "network":
         coord_label = "Approximate Lat/Lon (device network — used for map & named address):"
+    elif map_source == "dashboard":
+        coord_label = "Lat/Lon (refined — dashboard device GPS, matches Accident logs):"
     elif sms_used_network_for_map:
         coord_label = "Approximate Lat/Lon (network fallback — used for map & named address):"
     else:
         coord_label = "Lat/Lon (helmet GPS — map position):"
 
+    update_banner = "LOCATION UPDATE — refined map position\n" if dashboard_refinement else ""
+
     return (
         "GUARDIAN HELMET ACCIDENT LOG\n"
+        f"{update_banner}"
         f"Type: {kind}\n"
         f"Alert ID: {alert_id}\n"
         f"Trigger: {trigger}\n"
@@ -944,12 +963,63 @@ def _send_semaphore_sms(phone_number, message):
 
 
 def _send_alert_sms_to_contacts(
-    alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, gps_stale=False, req=None
+    alert_id,
+    lat,
+    lon,
+    accel,
+    tilt_x,
+    tilt_y,
+    ts,
+    vibration_triggered,
+    gps_stale=False,
+    req=None,
+    refined_from_dashboard=False,
 ):
     """Send accident SMS. Named area uses helmet connection IP + map; GPS is separate."""
     phones = _get_emergency_phones()
     if not phones:
         return 0, 0, "no_contacts"
+
+    if refined_from_dashboard:
+        mla, mlo = float(lat), float(lon)
+        place_address = None
+        if abs(mla) >= 1e-9 or abs(mlo) >= 1e-9:
+            place_address = _reverse_geocode(mla, mlo)
+        device_area_text = (
+            "Position source: web dashboard applied this device’s GPS to the alert "
+            "(helmet had no satellite fix when the crash signal arrived)."
+        )
+        msg = _build_alert_sms_message(
+            alert_id,
+            0.0,
+            0.0,
+            accel,
+            tilt_x,
+            tilt_y,
+            ts,
+            vibration_triggered,
+            place_address=place_address,
+            gps_stale=False,
+            device_area_text=device_area_text,
+            map_lat=mla,
+            map_lon=mlo,
+            has_gps_fix=False,
+            sms_used_network_for_map=False,
+            map_source="dashboard",
+            dashboard_refinement=True,
+        )
+        ok_count = 0
+        fail_count = 0
+        last_error = ""
+        for p in phones:
+            ok, info = _send_semaphore_sms(p, msg) if SEMAPHORE_API_KEY else _send_iprog_sms(p, msg)
+            if ok:
+                ok_count += 1
+            else:
+                fail_count += 1
+                last_error = info
+        return ok_count, fail_count, last_error
+
     has_gps_fix = abs(float(lat)) >= 1e-9 or abs(float(lon)) >= 1e-9
     ip_data = _lookup_ip_geo(_get_client_ip(req)) if req is not None else None
     ip_lat = ip_lon = None
@@ -1031,6 +1101,7 @@ def _send_alert_sms_to_contacts(
         has_gps_fix=has_gps_fix,
         sms_used_network_for_map=sms_used_network_for_map,
         map_source=map_source,
+        dashboard_refinement=False,
     )
     ok_count = 0
     fail_count = 0
@@ -1217,6 +1288,34 @@ def alert_update_location(alert_id):
         conn.commit()
     finally:
         conn.close()
+
+    if SMS_ON_LOCATION_UPDATE:
+        conn = get_db()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """SELECT id, latitude, longitude, acceleration, tilt_x, tilt_y, timestamp, vibration_triggered
+                       FROM alerts WHERE id = %s""",
+                    (alert_id,),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if row:
+            _send_alert_sms_to_contacts(
+                alert_id=row["id"],
+                lat=float(row["latitude"]),
+                lon=float(row["longitude"]),
+                accel=float(row["acceleration"] or 0),
+                tilt_x=float(row["tilt_x"] or 0),
+                tilt_y=float(row["tilt_y"] or 0),
+                ts=row["timestamp"],
+                vibration_triggered=bool(row.get("vibration_triggered")),
+                gps_stale=False,
+                req=None,
+                refined_from_dashboard=True,
+            )
+
     return jsonify({"status": "ok"})
 
 
