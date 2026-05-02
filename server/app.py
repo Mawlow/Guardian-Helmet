@@ -42,6 +42,12 @@ SEMAPHORE_SSL_VERIFY = os.environ.get("SEMAPHORE_SSL_VERIFY", "1").strip().lower
 SEMAPHORE_USE_PRIORITY = os.environ.get("SEMAPHORE_USE_PRIORITY", "0").strip().lower() in {"1", "true", "yes", "on"}
 SEMAPHORE_QUERY_STRING = os.environ.get("SEMAPHORE_QUERY_STRING", "0").strip().lower() in {"1", "true", "yes", "on"}
 SMS_TIMEZONE = os.environ.get("SMS_TIMEZONE", "Asia/Manila").strip() or "Asia/Manila"
+# OpenStreetMap Nominatim reverse geocoding (free; identify your app via User-Agent per policy)
+REVERSE_GEOCODE_ENABLED = os.environ.get("REVERSE_GEOCODE_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+NOMINATIM_BASE_URL = os.environ.get("NOMINATIM_BASE_URL", "https://nominatim.openstreetmap.org").strip().rstrip("/")
+NOMINATIM_USER_AGENT = os.environ.get("NOMINATIM_USER_AGENT", "GuardianHelmet/1.0 (accident-alerts)").strip() or "GuardianHelmet/1.0"
+REVERSE_GEOCODE_TIMEOUT = float(os.environ.get("REVERSE_GEOCODE_TIMEOUT", "8"))
+REVERSE_GEOCODE_MAX_CHARS = int(os.environ.get("REVERSE_GEOCODE_MAX_CHARS", "350"))
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -461,6 +467,50 @@ def _format_sms_phone(phone):
     return p
 
 
+def _reverse_geocode(lat, lon):
+    """Return human-readable address from coordinates via OSM Nominatim, or None."""
+    if not REVERSE_GEOCODE_ENABLED:
+        return None
+    try:
+        la = float(lat)
+        lo = float(lon)
+    except (TypeError, ValueError):
+        return None
+    if abs(la) < 1e-9 and abs(lo) < 1e-9:
+        return None
+    q = urlparse.urlencode(
+        {
+            "lat": str(la),
+            "lon": str(lo),
+            "format": "json",
+            "addressdetails": "0",
+        }
+    )
+    url = f"{NOMINATIM_BASE_URL}/reverse?{q}"
+    req = urlrequest.Request(
+        url,
+        headers={
+            "User-Agent": NOMINATIM_USER_AGENT,
+            "Accept": "application/json",
+            "Accept-Language": "en",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=REVERSE_GEOCODE_TIMEOUT) as resp:
+            if resp.status != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        addr = (data.get("display_name") or "").strip()
+        if not addr:
+            return None
+        if len(addr) > REVERSE_GEOCODE_MAX_CHARS:
+            addr = addr[: REVERSE_GEOCODE_MAX_CHARS - 1].rstrip() + "…"
+        return addr
+    except Exception:
+        return None
+
+
 def _format_sms_time(ts):
     """Format alert timestamp to local timezone for SMS readability."""
     try:
@@ -486,18 +536,24 @@ def _format_sms_time(ts):
     return local_dt.strftime("%Y-%m-%d %I:%M:%S %p"), str(tz)
 
 
-def _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered):
+def _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, address=None):
     kind = "ACCIDENT ALERT" if not vibration_triggered else "VIBRATION + ACCIDENT ALERT"
     trigger = "vibration + sensor thresholds" if vibration_triggered else "sensor thresholds (acceleration/tilt)"
     map_url = f"https://maps.google.com/?q={lat:.6f},{lon:.6f}"
     time_text, tz_name = _format_sms_time(ts)
+    if address:
+        addr_line = f"Location (approx): {address}"
+    else:
+        addr_line = "Location (approx): unavailable (no GPS fix or lookup failed — use Lat/Lon below)"
     return (
         "GUARDIAN HELMET ACCIDENT LOG\n"
         f"Type: {kind}\n"
         f"Alert ID: {alert_id}\n"
         f"Trigger: {trigger}\n"
         f"Time ({tz_name}): {time_text}\n"
-        f"Coordinates: {lat:.6f}, {lon:.6f}\n"
+        f"{addr_line}\n"
+        f"Latitude: {lat:.6f}\n"
+        f"Longitude: {lon:.6f}\n"
         f"Map: {map_url}\n"
         f"Acceleration: {accel:.2f} g\n"
         f"Tilt X: {tilt_x:.1f} deg\n"
@@ -607,7 +663,10 @@ def _send_alert_sms_to_contacts(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, v
     phones = _get_emergency_phones()
     if not phones:
         return 0, 0, "no_contacts"
-    msg = _build_alert_sms_message(alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered)
+    address = _reverse_geocode(lat, lon)
+    msg = _build_alert_sms_message(
+        alert_id, lat, lon, accel, tilt_x, tilt_y, ts, vibration_triggered, address=address
+    )
     ok_count = 0
     fail_count = 0
     last_error = ""
