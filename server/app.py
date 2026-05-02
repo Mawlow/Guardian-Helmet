@@ -4,6 +4,7 @@ import ipaddress
 import json
 import os
 import ssl
+import math
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from urllib import error as urlerror
@@ -727,6 +728,25 @@ def _format_sms_time(ts):
     return local_dt.strftime("%Y-%m-%d %I:%M:%S %p"), str(tz)
 
 
+def _distance_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance in kilometers between two coordinates."""
+    try:
+        la1 = math.radians(float(lat1))
+        lo1 = math.radians(float(lon1))
+        la2 = math.radians(float(lat2))
+        lo2 = math.radians(float(lon2))
+    except (TypeError, ValueError):
+        return None
+    dlat = la2 - la1
+    dlon = lo2 - lo1
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(la1) * math.cos(la2) * math.sin(dlon / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return 6371.0 * c
+
+
 def _build_alert_sms_message(
     alert_id,
     lat,
@@ -743,6 +763,7 @@ def _build_alert_sms_message(
     map_lon=None,
     has_gps_fix=False,
     sms_used_network_for_map=False,
+    map_source="network",
 ):
     """
     Named address comes from Nominatim using map_lat/map_lon (network IP position by default).
@@ -755,9 +776,16 @@ def _build_alert_sms_message(
     map_url = f"https://maps.google.com/?q={mla:.6f},{mlo:.6f}"
     time_text, tz_name = _format_sms_time(ts)
 
+    if map_source == "helmet_gps":
+        source_label = "helmet GPS fix"
+    elif map_source == "network":
+        source_label = "device network location"
+    else:
+        source_label = "fallback location"
+
     if place_address:
         address_block = (
-            "PLACE / ADDRESS (from device network location → map lookup, not the helmet GPS chip):\n"
+            f"PLACE / ADDRESS (from {source_label}):\n"
             f"{place_address}"
         )
     elif abs(mla) < 1e-9 and abs(mlo) < 1e-9:
@@ -792,7 +820,7 @@ def _build_alert_sms_message(
         else:
             gps_extra = "Helmet GPS reading: no fix (optional sensor only).\n"
 
-    if not SMS_USE_HELMET_GPS_FOR_ADDRESS:
+    if map_source == "network":
         coord_label = "Approximate Lat/Lon (device network — used for map & named address):"
     elif sms_used_network_for_map:
         coord_label = "Approximate Lat/Lon (network fallback — used for map & named address):"
@@ -948,19 +976,37 @@ def _send_alert_sms_to_contacts(
             )
 
     sms_used_network_for_map = False
+    map_source = "none"
     if SMS_USE_HELMET_GPS_FOR_ADDRESS:
         if has_gps_fix:
             mla, mlo = float(lat), float(lon)
+            map_source = "helmet_gps"
         elif ip_lat is not None and ip_lon is not None:
             mla, mlo = ip_lat, ip_lon
             sms_used_network_for_map = True
+            map_source = "network"
         else:
             mla, mlo = 0.0, 0.0
     else:
-        # Address + map from device/network IP only (not helmet GPS), per product setting.
-        if ip_lat is not None and ip_lon is not None:
+        # Prefer the helmet GPS when available to keep SMS map/address aligned with the dashboard map.
+        if has_gps_fix:
+            use_network = False
+            if ip_lat is not None and ip_lon is not None:
+                delta_km = _distance_km(lat, lon, ip_lat, ip_lon)
+                # If network and GPS are practically the same area, keep network wording for consistency.
+                if delta_km is not None and delta_km <= 0.8:
+                    use_network = True
+            if use_network:
+                mla, mlo = ip_lat, ip_lon
+                sms_used_network_for_map = True
+                map_source = "network"
+            else:
+                mla, mlo = float(lat), float(lon)
+                map_source = "helmet_gps"
+        elif ip_lat is not None and ip_lon is not None:
             mla, mlo = ip_lat, ip_lon
             sms_used_network_for_map = True
+            map_source = "network"
         else:
             mla, mlo = 0.0, 0.0
 
@@ -984,6 +1030,7 @@ def _send_alert_sms_to_contacts(
         map_lon=mlo,
         has_gps_fix=has_gps_fix,
         sms_used_network_for_map=sms_used_network_for_map,
+        map_source=map_source,
     )
     ok_count = 0
     fail_count = 0
