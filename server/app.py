@@ -52,6 +52,10 @@ REVERSE_GEOCODE_MAX_CHARS = int(os.environ.get("REVERSE_GEOCODE_MAX_CHARS", "350
 # Approximate area from the helmet’s HTTP connection (public IP), not the GPS module
 IP_GEOLOCATION_ENABLED = os.environ.get("IP_GEOLOCATION_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
 IP_API_BASE = os.environ.get("IP_API_BASE", "http://ip-api.com").strip().rstrip("/")
+# SMS place names + map: use helmet GPS from JSON (1) or only device/network IP position (0 = default).
+SMS_USE_HELMET_GPS_FOR_ADDRESS = os.environ.get(
+    "SMS_USE_HELMET_GPS_FOR_ADDRESS", "0"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # ESP32 (helmet) IP — set in .env or in Settings in the web app (stored in config.json)
 CONFIG_JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
@@ -482,19 +486,74 @@ def _get_client_ip(req):
     return (req.remote_addr or "").strip() or None
 
 
+def _lookup_server_wan_geo():
+    """
+    City/region for this machine's public (WAN) IP — used when the helmet only appears as a LAN address.
+    ip-api.com with no IP in the path returns the requester's public address.
+    """
+    if not IP_GEOLOCATION_ENABLED:
+        return None
+    url = f"{IP_API_BASE}/json/?fields=status,message,country,regionName,city,lat,lon"
+    req = urlrequest.Request(
+        url,
+        headers={"User-Agent": NOMINATIM_USER_AGENT},
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=6) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        if data.get("status") != "success":
+            return None
+        parts = [data.get("city"), data.get("regionName"), data.get("country")]
+        label = ", ".join(p for p in parts if p)
+        if not label:
+            return None
+        la = data.get("lat")
+        lo = data.get("lon")
+        return {
+            "label": f"Approximate area (this site’s internet / home WAN): {label}",
+            "lat": float(la) if la is not None else None,
+            "lon": float(lo) if lo is not None else None,
+        }
+    except Exception:
+        return None
+
+
 def _lookup_ip_geo(ip):
     """
-    Approximate city/region from the helmet's public IP (where it connects to the internet).
-    Does not use the GPS module. Private/LAN IPs cannot be geolocated to a city.
+    Approximate city/region from the helmet's IP. Public IP → that location.
+    Private LAN IP → fall back to this server's WAN location (same building / ISP area as typical home tests).
     """
-    if not ip or not IP_GEOLOCATION_ENABLED:
+    if not IP_GEOLOCATION_ENABLED:
+        return None
+    if not ip:
         return None
     try:
         a = ipaddress.ip_address(ip.split("%")[0])
-        if a.is_private or a.is_loopback or a.is_reserved or a.is_link_local or a.is_multicast:
-            return {"label": None, "lat": None, "lon": None, "private": True, "ip": ip}
+        is_private = a.is_private or a.is_loopback or a.is_reserved or a.is_link_local or a.is_multicast
     except ValueError:
         return None
+
+    if is_private:
+        wan = _lookup_server_wan_geo()
+        if wan and wan.get("lat") is not None and wan.get("lon") is not None:
+            return {
+                "label": wan["label"],
+                "lat": wan["lat"],
+                "lon": wan["lon"],
+                "private_client": True,
+                "wan_fallback": True,
+                "client_ip": ip,
+            }
+        return {
+            "label": None,
+            "lat": None,
+            "lon": None,
+            "private_client": True,
+            "wan_fallback": False,
+            "client_ip": ip,
+        }
+
     url = f"{IP_API_BASE}/json/{urlparse.quote(ip)}?fields=status,message,country,regionName,city,lat,lon"
     req = urlrequest.Request(
         url,
@@ -512,8 +571,9 @@ def _lookup_ip_geo(ip):
             "label": label or None,
             "lat": data.get("lat"),
             "lon": data.get("lon"),
-            "private": False,
-            "ip": ip,
+            "private_client": False,
+            "wan_fallback": False,
+            "client_ip": ip,
         }
     except Exception:
         return None
@@ -678,16 +738,15 @@ def _build_alert_sms_message(
     vibration_triggered,
     place_address=None,
     gps_stale=False,
-    device_network_label=None,
-    device_is_private_lan=False,
+    device_area_text=None,
     map_lat=None,
     map_lon=None,
     has_gps_fix=False,
+    sms_used_network_for_map=False,
 ):
     """
-    place_address: street/place name from map coordinates (Nominatim).
-    Device area: from the helmet's connection IP (not the GPS module).
-    map_lat/map_lon: coordinates for the map link (GPS if available, else IP centroid).
+    Named address comes from Nominatim using map_lat/map_lon (network IP position by default).
+    Helmet GPS (lat/lon args) is optional info only when SMS uses network for place name.
     """
     kind = "ACCIDENT ALERT" if not vibration_triggered else "VIBRATION + ACCIDENT ALERT"
     trigger = "vibration + sensor thresholds" if vibration_triggered else "sensor thresholds (acceleration/tilt)"
@@ -696,32 +755,49 @@ def _build_alert_sms_message(
     map_url = f"https://maps.google.com/?q={mla:.6f},{mlo:.6f}"
     time_text, tz_name = _format_sms_time(ts)
 
-    if device_is_private_lan:
-        device_line = (
-            "Device / network area: same WiFi/LAN as your server (private IP) — "
-            "city name unavailable until the helmet uses mobile data or your server has a public URL."
-        )
-    elif device_network_label:
-        device_line = f"Device / network area (where helmet connects): {device_network_label}"
-    else:
-        device_line = "Device / network area: could not resolve (check server internet / IP lookup)."
-
     if place_address:
-        place_line = f"Place names (map position): {place_address}"
+        address_block = (
+            "PLACE / ADDRESS (from device network location → map lookup, not the helmet GPS chip):\n"
+            f"{place_address}"
+        )
     elif abs(mla) < 1e-9 and abs(mlo) < 1e-9:
-        place_line = "Place names (map position): unavailable — no coordinates for map."
+        address_block = (
+            "PLACE / ADDRESS: unavailable — no network-based position (check IP geolocation / internet)."
+        )
     else:
-        place_line = "Place names (map position): lookup failed — use Lat/Lon below."
+        address_block = (
+            "PLACE / ADDRESS: named lookup failed for this position — use Lat/Lon and Map link below."
+        )
+
+    if device_area_text:
+        net_line = device_area_text
+    else:
+        net_line = "Network / device connection: unavailable (enable IP_GEOLOCATION_ENABLED)."
 
     stale_line = ""
-    if gps_stale:
+    if gps_stale and SMS_USE_HELMET_GPS_FOR_ADDRESS:
         stale_line = (
-            "\nGPS note: no satellite lock at crash — Lat/Lon are LAST KNOWN from the helmet.\n"
+            "\nGPS note: no satellite lock at crash — map used last known helmet GPS.\n"
         )
 
-    gps_status = "satellite fix at alert" if has_gps_fix and not gps_stale else (
-        "last known position (no lock at crash)" if gps_stale else "no fix (map uses network area if available)"
-    )
+    if SMS_USE_HELMET_GPS_FOR_ADDRESS:
+        gps_extra = (
+            f"Helmet GPS module: {'fix at alert' if has_gps_fix and not gps_stale else ('last known' if gps_stale else 'no fix')}\n"
+        )
+    else:
+        if has_gps_fix or abs(float(lat)) >= 1e-9 or abs(float(lon)) >= 1e-9:
+            gps_extra = (
+                f"Helmet GPS reading (not used for address above): {float(lat):.6f}, {float(lon):.6f}\n"
+            )
+        else:
+            gps_extra = "Helmet GPS reading: no fix (optional sensor only).\n"
+
+    if not SMS_USE_HELMET_GPS_FOR_ADDRESS:
+        coord_label = "Approximate Lat/Lon (device network — used for map & named address):"
+    elif sms_used_network_for_map:
+        coord_label = "Approximate Lat/Lon (network fallback — used for map & named address):"
+    else:
+        coord_label = "Lat/Lon (helmet GPS — map position):"
 
     return (
         "GUARDIAN HELMET ACCIDENT LOG\n"
@@ -729,12 +805,12 @@ def _build_alert_sms_message(
         f"Alert ID: {alert_id}\n"
         f"Trigger: {trigger}\n"
         f"Time ({tz_name}): {time_text}\n"
-        f"{device_line}\n"
-        f"{place_line}\n"
+        f"{address_block}\n"
+        f"{net_line}\n"
         f"{stale_line}"
-        f"GPS module: {gps_status}\n"
-        f"Latitude (map): {mla:.6f}\n"
-        f"Longitude (map): {mlo:.6f}\n"
+        f"{gps_extra}"
+        f"{coord_label}\n"
+        f"{mla:.6f}, {mlo:.6f}\n"
         f"Map: {map_url}\n"
         f"Acceleration: {accel:.2f} g\n"
         f"Tilt X: {tilt_x:.1f} deg\n"
@@ -848,26 +924,45 @@ def _send_alert_sms_to_contacts(
         return 0, 0, "no_contacts"
     has_gps_fix = abs(float(lat)) >= 1e-9 or abs(float(lon)) >= 1e-9
     ip_data = _lookup_ip_geo(_get_client_ip(req)) if req is not None else None
-    device_network_label = None
-    device_private = False
     ip_lat = ip_lon = None
+    device_area_text = None
     if ip_data:
-        device_private = bool(ip_data.get("private"))
-        if not device_private:
-            device_network_label = ip_data.get("label")
-            la, lo = ip_data.get("lat"), ip_data.get("lon")
-            if la is not None and lo is not None:
-                try:
-                    ip_lat, ip_lon = float(la), float(lo)
-                except (TypeError, ValueError):
-                    ip_lat, ip_lon = None, None
+        la, lo = ip_data.get("lat"), ip_data.get("lon")
+        if la is not None and lo is not None:
+            try:
+                ip_lat, ip_lon = float(la), float(lo)
+            except (TypeError, ValueError):
+                ip_lat, ip_lon = None, None
+        label = ip_data.get("label")
+        wan_fb = bool(ip_data.get("wan_fallback"))
+        pcli = bool(ip_data.get("private_client"))
+        clip = ip_data.get("client_ip") or "?"
+        if label:
+            if wan_fb and pcli:
+                device_area_text = f"Helmet IP is private (LAN {clip}). {label}"
+            else:
+                device_area_text = f"Device / network area (helmet connection): {label}"
+        elif pcli and not wan_fb:
+            device_area_text = (
+                f"Helmet on private WiFi ({clip}); WAN lookup failed — check PC internet or use GPS outdoors."
+            )
 
-    if has_gps_fix:
-        mla, mlo = float(lat), float(lon)
-    elif ip_lat is not None and ip_lon is not None:
-        mla, mlo = ip_lat, ip_lon
+    sms_used_network_for_map = False
+    if SMS_USE_HELMET_GPS_FOR_ADDRESS:
+        if has_gps_fix:
+            mla, mlo = float(lat), float(lon)
+        elif ip_lat is not None and ip_lon is not None:
+            mla, mlo = ip_lat, ip_lon
+            sms_used_network_for_map = True
+        else:
+            mla, mlo = 0.0, 0.0
     else:
-        mla, mlo = 0.0, 0.0
+        # Address + map from device/network IP only (not helmet GPS), per product setting.
+        if ip_lat is not None and ip_lon is not None:
+            mla, mlo = ip_lat, ip_lon
+            sms_used_network_for_map = True
+        else:
+            mla, mlo = 0.0, 0.0
 
     place_address = None
     if abs(mla) >= 1e-9 or abs(mlo) >= 1e-9:
@@ -884,11 +979,11 @@ def _send_alert_sms_to_contacts(
         vibration_triggered,
         place_address=place_address,
         gps_stale=gps_stale,
-        device_network_label=device_network_label,
-        device_is_private_lan=device_private,
+        device_area_text=device_area_text,
         map_lat=mla,
         map_lon=mlo,
         has_gps_fix=has_gps_fix,
+        sms_used_network_for_map=sms_used_network_for_map,
     )
     ok_count = 0
     fail_count = 0
